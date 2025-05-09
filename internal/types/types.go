@@ -2,6 +2,7 @@
 package types
 
 import (
+	"errors" // Keep errors for defining base errors
 	"fmt"
 	"sync/atomic"
 )
@@ -65,6 +66,7 @@ const (
 
 // --- Standardized Structures ---
 
+// Instrument represents a tradable asset.
 type Instrument struct {
 	Symbol        string       // e.g., "ETHUSDT"
 	BaseCurrency  Currency     // e.g., "ETH"
@@ -90,14 +92,14 @@ func (o Order) String() string {
 
 // --- Standardized Errors ---
 
-
+// ErrorCode defines standard error reasons.
 type ErrorCode int
 
 const (
 	ErrUnknown ErrorCode = iota
 	ErrConfigLoading
 	ErrInvalidSequence
-	ErrInsufficientLiquidity // Maybe from Orderbook
+	ErrInsufficientLiquidity // ErrorCode for insufficient liquidity condition
 	ErrOrderRejected         // From Exchange API
 	ErrConnectionFailed      // WebSocket or GRPC
 	ErrOrderSubmissionFailed // Generic submission error
@@ -105,17 +107,28 @@ const (
 	// Add more specific codes as needed
 )
 
+// Define base errors that can be wrapped by TradingError.
+// These are private to the package and provide consistent underlying errors.
+var (
+	ErrBaseInsufficientLiquidity = errors.New("insufficient liquidity") // Base error for this condition
+	// Add other base errors if needed, e.g., errBaseConnectionFailed = errors.New("connection failed")
+)
+
+
 // TradingError standardizes application errors.
 type TradingError struct {
 	Code    ErrorCode // Standardized code
-	Message string    // Human-readable message
-	Wrapped error     // Original error, if any
+	Message string    // Human-readable message (user-friendly context)
+	Wrapped error     // Original error, if any (for debugging)
 }
 
 func (e TradingError) Error() string {
 	if e.Wrapped != nil {
+		// Include the specific message provided when the TradingError was created
 		return fmt.Sprintf("[%d] %s: %v", e.Code, e.Message, e.Wrapped)
 	}
+	// If no specific message is provided, use a default based on code or just the code
+	// For now, we assume Message will always be provided when creating TradingError
 	return fmt.Sprintf("[%d] %s", e.Code, e.Message)
 }
 

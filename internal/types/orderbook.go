@@ -2,7 +2,7 @@
 package types
 
 import (
-	"errors"
+	//"errors" // errors is now only used in types.go for base errors
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -76,20 +76,32 @@ func (ob *Orderbook) BestAsk() (uint64, bool) {
 	return bestPrice, found
 }
 
+// REMOVE THIS LINE: var ErrInsufficientLiquidity = errors.New("insufficient liquidity for mid-price calculation")
+
 
 // MidPrice calculates the mid-price (average of best bid and best ask).
 // Returns the mid-price as float64 (unscaled) and an error if best bid/ask are not available.
-func (ob *Orderbook) MidPrice() (float64, error) {
+func (ob *Orderbook) MidPrice() (float64, error) { // Changed float66 to float64
 	bestBid, bidFound := ob.BestBid()
 	bestAsk, askFound := ob.BestAsk()
 
 	if !bidFound || !askFound {
-		return 0.0, ErrInsufficientLiquidity
+		// Return TradingError wrapping the base error
+		return 0.0, TradingError{
+			Code:    ErrInsufficientLiquidity,
+			Message: "Best bid or ask not found",
+			Wrapped: ErrBaseInsufficientLiquidity, // Make sure ErrBaseInsufficientLiquidity is defined and exported or accessible
+		}
 	}
 
 	// Ensure both best bid and best ask are non-zero (valid prices)
 	if bestBid == 0 || bestAsk == 0 {
-         return 0.0, ErrInsufficientLiquidity
+         // Return TradingError wrapping the base error
+         return 0.0, TradingError{
+             Code:    ErrInsufficientLiquidity,
+             Message: "Best bid or ask is zero",
+             Wrapped: ErrBaseInsufficientLiquidity,
+         }
     }
 
 
