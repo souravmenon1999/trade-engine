@@ -3,7 +3,7 @@ package exchange
 
 import (
 	"context"
-	"trading-system/internal/types"
+	"github.com/souravmenon1999/trade-engine/internal/types"
 )
 
 // ExchangeClient defines the common interface for interacting with exchanges.

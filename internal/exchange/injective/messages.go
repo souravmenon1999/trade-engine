@@ -3,7 +3,7 @@ package injective
 
 import (
 	"fmt"
-	"trading-system/internal/types"
+	"github.com/souravmenon1999/trade-engine/internal/types"
 	// In a real implementation, you would import Injective SDK proto packages here
 	// e.g., "github.com/InjectiveLabs/sdk-go/chain/spot/types"
 	// e.g., "github.com/cosmos/cosmos-sdk/types"

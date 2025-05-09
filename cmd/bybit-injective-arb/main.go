@@ -8,12 +8,12 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-	"trading-system/internal/config"
-	"trading-system/internal/exchange/bybit"
-	"trading-system/internal/exchange/injective"
-	"trading-system/internal/logging"
-	"trading-system/internal/processor"
-	"trading-system/internal/strategy/bybitinjective" // Import the strategy
+	"github.com/souravmenon1999/trade-engine/internal/config"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/injective"
+	"github.com/souravmenon1999/trade-engine/internal/logging"
+	"github.com/souravmenon1999/trade-engine/internal/processor"
+	"github.com/souravmenon1999/trade-engine/internal/strategy/bybitinjective" // Import the strategy
 )
 
 func main() {

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync"
 	"time" // Import time for placeholders
-	"trading-system/internal/config"
-	"trading-system/internal/logging"
-	"trading-system/internal/types"
+	"github.com/souravmenon1999/trade-engine/internal/config"
+	"github.com/souravmenon1999/trade-engine/internal/logging"
+	"github.com/souravmenon1999/trade-engine/internal/types"
 	// In a real implementation, you would import Injective SDK packages here
 	// e.g., chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
 	// e.g., rpchttp "github.com/tendermint/tendermint/rpc/http"

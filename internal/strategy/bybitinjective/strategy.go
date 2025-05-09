@@ -4,12 +4,12 @@ package bybitinjective
 import (
 	"context"
 	"fmt"
-	"trading-system/internal/config"
-	"trading-system/internal/exchange/bybit"
-	"trading-system/internal/exchange/injective"
-	"trading-system/internal/logging"
-	"trading-system/internal/processor"
-	"trading-system/internal/types"
+	"github.com/souravmenon1999/trade-engine/internal/config"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/injective"
+	"github.com/souravmenon1999/trade-engine/internal/logging"
+	"github.com/souravmenon1999/trade-engine/internal/processor"
+	"github.com/souravmenon1999/trade-engine/internal/types"
 	"log/slog"
 )
 

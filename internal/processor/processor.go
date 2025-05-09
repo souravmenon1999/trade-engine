@@ -7,9 +7,9 @@ import (
 	"math"
 	"sync/atomic"
 	"time"
-	"trading-system/internal/config"
-	"trading-system/internal/logging"
-	"trading-system/internal/types"
+	"github.com/souravmenon1999/trade-engine/internal/config"
+	"github.com/souravmenon1999/trade-engine/internal/logging"
+	"github.com/souravmenon1999/trade-engine/internal/types"
 	"log/slog" // Ensure slog is imported
 )
 
