@@ -76,7 +76,6 @@ func (ob *Orderbook) BestAsk() (uint64, bool) {
 	return bestPrice, found
 }
 
-var ErrInsufficientLiquidity = errors.New("insufficient liquidity for mid-price calculation")
 
 // MidPrice calculates the mid-price (average of best bid and best ask).
 // Returns the mid-price as float64 (unscaled) and an error if best bid/ask are not available.
