@@ -10,7 +10,7 @@ import (
 
 	"github.com/gorilla/websocket" // Import gorilla websocket
 	"github.com/souravmenon1999/trade-engine/internal/logging"
-	"log/slog" // Ensure slog is imported
+	"log/slog" 
 )
 
 const (

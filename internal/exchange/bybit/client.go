@@ -2,27 +2,27 @@
 package bybit
 
 import (
-	 
 	"context"
-	"encoding/json" // Keep json import as it's used for message Data
+	"encoding/json" 
 	"fmt"
-	"math" // Added for triggerReconnect
+	"math" 
 	"math/rand"
-	"strconv" // Keep strconv as it's used for parsing prices/quantities
+	"strconv" 
 	"sync"
 	"sync/atomic"
 	"time"
-	"github.com/souravmenon1999/trade-engine/internal/config" // Corrected import path
+
+	"github.com/souravmenon1999/trade-engine/internal/config" 
 	"github.com/souravmenon1999/trade-engine/internal/logging"
 	"github.com/souravmenon1999/trade-engine/internal/types"
+
 	// REMOVE THIS LINE: "nhooyr.io/websocket" // Ensure this is imported
 	"log/slog" // Ensure slog is imported
 )
 
 // Note: The WSConnection struct and its methods (Connect, Send, Messages, Close)
 // are defined in ws.go. This client.go file uses that abstraction.
-// Make sure your internal/exchange/bybit/ws.go file is updated
-// to use github.com/gorilla/websocket as shown in the previous step.
+
 
 // Client implements the ExchangeClient interface for Bybit.
 type Client struct {
@@ -258,6 +258,27 @@ func (c *Client) handleSnapshot(msg WSMessage) {
 
 	c.logger.Info("Received orderbook snapshot", "symbol", data.Symbol, "seq", data.Seq)
 
+	// --- ADD LOGGING FOR RAW PRICES HERE ---
+	rawBestBidPrice := "N/A"
+	if len(data.Bids) > 0 && len(data.Bids[0]) > 0 {
+		// Unmarshal the json.RawMessage price string into a Go string
+		_ = json.Unmarshal(data.Bids[0][0], &rawBestBidPrice) // Ignore unmarshal error for logging simplicity
+	}
+
+	rawBestAskPrice := "N/A"
+	if len(data.Asks) > 0 && len(data.Asks[0]) > 0 {
+		// Unmarshal the json.RawMessage price string into a Go string
+		_ = json.Unmarshal(data.Asks[0][0], &rawBestAskPrice) // Ignore unmarshal error for logging simplicity
+	}
+
+    // Use slog's structured logging for readability
+	c.logger.Info("Bybit Raw Prices (Snapshot)",
+		"bid_price", rawBestBidPrice,
+		"ask_price", rawBestAskPrice,
+		"symbol", data.Symbol, // Add symbol for context
+	)
+    // --- END LOGGING ---
+
 	// Clear the existing orderbook and rebuild from the snapshot
 	c.orderbook.Bids = &sync.Map{}
 	c.orderbook.Asks = &sync.Map{}
@@ -358,6 +379,13 @@ func (c *Client) populateOrderbookLevels(levelsMap *sync.Map, entries [][]json.R
 			c.logger.Error("Failed to unmarshal quantity json.RawMessage into string", "error", err, "raw_bytes", string(entry[1]))
 			continue
 		}
+
+		c.logger.Debug("Raw Price Level Received",
+		"side", side,
+		"price_str", priceStr,
+		"quantity_str", quantityStr,
+		"type", "snapshot", // Indicate it's from a snapshot
+	)
 
 		// Parse the string as float64
 		priceFloat, err := strconv.ParseFloat(priceStr, 64)

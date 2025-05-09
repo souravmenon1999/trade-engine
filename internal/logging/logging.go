@@ -2,7 +2,7 @@
 package logging
 
 import (
-	"log/slog" // Using standard library slog
+	"log/slog" 
 	"os"
 )
 

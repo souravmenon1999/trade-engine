@@ -34,7 +34,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // Ensure application context is cancelled on exit
 
-	// Initialize Bybit Client (M2)
+	// Initialize Bybit Client 
 	bybitClient := bybit.NewClient(ctx, &cfg.Bybit)
 	err = bybitClient.SubscribeOrderbook(ctx, cfg.Bybit.Symbol)
 	if err != nil {
@@ -46,7 +46,7 @@ func main() {
     }
 
 
-	// Initialize Injective Client (M3)
+	// Initialize Injective Client 
 	injectiveClient, err := injective.NewClient(ctx, &cfg.Injective)
 	if err != nil {
 		logger.Error("Failed to initialize Injective client", "error", err)
@@ -55,11 +55,11 @@ func main() {
 		logger.Info("Injective client initialized.")
 	}
 
-	// Initialize Price Processor (M4)
+	// Initialize Price Processor 
 	priceProcessor := processor.NewPriceProcessor(ctx, &cfg.Processor, &cfg.Order)
 	logger.Info("Price Processor initialized.")
 
-	// --- Milestone 5: Initialize and Run Strategy ---
+	// Initialize and Run Strategy 
 	strategy := bybitinjective.NewStrategy(ctx, cfg, bybitClient, injectiveClient, priceProcessor)
 
 	// Start the strategy's main execution loop in a goroutine

@@ -1,10 +1,10 @@
-// internal/config/config.go
+
 package config
 
 import (
 	
 	"github.com/spf13/viper"
-	"github.com/souravmenon1999/trade-engine/internal/types" // Import types for currency/exchange enums
+	"github.com/souravmenon1999/trade-engine/internal/types"
 )
 
 // Config holds the application configuration.

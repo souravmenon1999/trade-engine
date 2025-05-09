@@ -2,7 +2,7 @@
 package types
 
 import (
-	"errors" // Keep errors for defining base errors
+	"errors" 
 	"fmt"
 	"sync/atomic"
 )

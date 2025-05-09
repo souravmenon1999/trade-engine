@@ -2,7 +2,7 @@
 package types
 
 import (
-	//"errors" // errors is now only used in types.go for base errors
+	//"errors" 
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -76,7 +76,6 @@ func (ob *Orderbook) BestAsk() (uint64, bool) {
 	return bestPrice, found
 }
 
-// REMOVE THIS LINE: var ErrInsufficientLiquidity = errors.New("insufficient liquidity for mid-price calculation")
 
 
 // MidPrice calculates the mid-price (average of best bid and best ask).
