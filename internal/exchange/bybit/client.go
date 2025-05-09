@@ -7,6 +7,7 @@ import (
 	"encoding/json" // Keep json import as it's used for message Data
 	"fmt"
 	"math" // Added for triggerReconnect
+	"math/rand"
 	"strconv" // Keep strconv as it's used for parsing prices/quantities
 	"sync"
 	"sync/atomic"
@@ -16,7 +17,6 @@ import (
 	"github.com/souravmenon1999/trade-engine/internal/types"
 	// REMOVE THIS LINE: "nhooyr.io/websocket" // Ensure this is imported
 	"log/slog" // Ensure slog is imported
-	"errors" // Ensure errors is imported
 )
 
 // Note: The WSConnection struct and its methods (Connect, Send, Messages, Close)
@@ -376,7 +376,6 @@ func (c *Client) handleDelta(msg WSMessage) {
 		return
 	}
 
-	currentSeq := c.orderbook.SeqNumber.Load() // Get the last processed sequence number (from previous snapshot or delta U)
 	expected := c.expectedSeq.Load()            // Get the sequence number we currently expect (last U + 1)
 	receivedSeq := uint64(data.UpdateID)        // Use UpdateID (u) for delta sequence checks in V5
 
@@ -496,56 +495,50 @@ func (c *Client) triggerReconnect() {
 	defer c.reconnectMu.Unlock()
 
 	if c.isConnected.Load() {
-		c.logger.Debug("Reconnect triggered but already connected, skipping.")
-		return // Already reconnected or connecting
+		return // Already reconnected
 	}
-
-	// Check if context is already done
-	select {
-	case <-c.ctx.Done():
-		c.logger.Info("Context cancelled, not attempting reconnect.")
-		return // Client is shutting down
-	default:
-		// Continue with reconnect logic
-	}
-
 
 	attempt := c.reconnectAttempt.Add(1)
-	// Exponential backoff with jitter
+	// Exponential backoff
 	baseDelay := time.Second * time.Duration(math.Pow(2, float64(attempt-1)))
-    jitter := time.Duration(math.Float66(time.Now().UnixNano()) * float64(time.Second)) // Add up to 1 second of jitter
+
+    // Add jitter: a random duration up to 1 second
+    // Use rand.Float64() for a float between 0.0 and 1.0, then scale it.
+	jitter := time.Duration(rand.Float64() * float64(time.Second))
 	delay := baseDelay + jitter
 
-	if delay > 60*time.Second {
-		delay = 60*time.Second // Cap the delay
+	// Cap the delay
+	maxDelay := 60 * time.Second
+	if delay > maxDelay {
+		delay = maxDelay
 	}
 
 	c.logger.Warn("Connection lost or sequence gap, attempting reconnect", "attempt", attempt, "delay", delay)
 
 	// Use a goroutine to attempt reconnection after the delay
 	go func() {
-		// Wait for the delay or context cancellation
+		// Use the client's context to ensure this goroutine respects shutdown signals
 		select {
-		case <-time.After(delay):
-			// Delay finished, attempt reconnect
-			c.logger.Info("Attempting to reconnect now...")
-			// SubscribeOrderbook has logic to handle connection and send subscription
-			// It also updates isConnected and reconnectAttempt on success/failure.
-			err := c.SubscribeOrderbook(c.ctx, c.cfg.Symbol)
-			if err != nil {
-				c.logger.Error("Reconnect attempt failed", "error", err)
-				// SubscribeOrderbook failing will trigger triggerReconnect again internally after its delay
-			} else {
-				c.logger.Info("Reconnect successful!")
-				// Success handling (resetting counter) is inside SubscribeOrderbook
-			}
 		case <-c.ctx.Done():
-			c.logger.Info("Context cancelled during reconnect delay, abandoning reconnect attempt.")
+			c.logger.Debug("Reconnect goroutine stopping due to context cancellation.")
 			return // Client is shutting down
+		case <-time.After(delay):
+			// Wait for the calculated delay
+		}
+
+
+		c.logger.Info("Attempting to reconnect now...")
+		// Call SubscribeOrderbook again. It has logic to handle if already connected.
+		err := c.SubscribeOrderbook(c.ctx, c.cfg.Symbol)
+		if err != nil {
+			c.logger.Error("Reconnect attempt failed", "error", err)
+			// The logic inside SubscribeOrderbook will trigger triggerReconnect again on failure
+		} else {
+			c.logger.Info("Reconnect successful!")
+			// Reset reconnect attempt counter happens inside SubscribeOrderbook on success
 		}
 	}()
 }
-
 
 // countSyncMap is a helper for logging/debugging sync.Map size.
 func (c *Client) countSyncMap(m *sync.Map) int {

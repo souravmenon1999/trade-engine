@@ -3,7 +3,6 @@ package bybitinjective
 
 import (
 	"context"
-	"fmt"
 	"github.com/souravmenon1999/trade-engine/internal/config"
 	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
 	"github.com/souravmenon1999/trade-engine/internal/exchange/injective"

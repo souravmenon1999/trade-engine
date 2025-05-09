@@ -9,6 +9,7 @@ import (
 	"github.com/souravmenon1999/trade-engine/internal/config"
 	"github.com/souravmenon1999/trade-engine/internal/logging"
 	"github.com/souravmenon1999/trade-engine/internal/types"
+	"log/slog"
 	// In a real implementation, you would import Injective SDK packages here
 	// e.g., chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
 	// e.g., rpchttp "github.com/tendermint/tendermint/rpc/http"
@@ -204,4 +205,4 @@ func (c *Client) Close() error {
 }
 
 // Add this line at the end of the file to ensure it implements the interface
-var _ types.ExchangeClient = (*Client)(nil)
+var _ExchangeClient = (*Client)(nil)
