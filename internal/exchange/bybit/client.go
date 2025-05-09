@@ -558,4 +558,4 @@ func (c *Client) countSyncMap(m *sync.Map) int {
 }
 
 // Add this line at the end of the file to ensure it implements the interface
-var _ types.ExchangeClient = (*Client)(nil)
+var _ExchangeClient = (*Client)(nil)
