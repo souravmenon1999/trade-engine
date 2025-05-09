@@ -4,7 +4,7 @@ package config
 import (
 	"fmt"
 	"github.com/spf13/viper"
-	"github.com/souravmenon1999/trade-engine/internal/type" // Import types for currency/exchange enums
+	"github.com/souravmenon1999/trade-engine/internal/types" // Import types for currency/exchange enums
 )
 
 // Config holds the application configuration.
