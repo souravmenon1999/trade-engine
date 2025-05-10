@@ -1,8 +1,8 @@
-// internal/types/types.go
+// internal/types/types.go - Using provided code
 package types
 
 import (
-	"errors" 
+	"errors"
 	"fmt"
 	"sync/atomic"
 )

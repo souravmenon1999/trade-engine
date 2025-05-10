@@ -1,11 +1,12 @@
-// internal/strategy/bybitinjective/strategy.go
+// internal/strategy/bybitinjective/strategy.go - Updated Strategy
 package bybitinjective
 
 import (
 	"context"
+	"fmt"
 	"github.com/souravmenon1999/trade-engine/internal/config"
 	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
-	"github.com/souravmenon1999/trade-engine/internal/exchange/injective"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/injective" // Ensure injective is imported
 	"github.com/souravmenon1999/trade-engine/internal/logging"
 	"github.com/souravmenon1999/trade-engine/internal/processor"
 	"github.com/souravmenon1999/trade-engine/internal/types"
@@ -15,8 +16,8 @@ import (
 // Strategy orchestrates trading based on Bybit price and Injective execution.
 type Strategy struct {
 	cfg *config.Config // Full configuration for potential cross-component settings
-	bybitClient *bybit.Client
-	injectiveClient *injective.Client
+	bybitClient bybit.ExchangeClient // Use interface type
+	injectiveClient types.ExchangeClient // Use interface type
 	priceProcessor *processor.PriceProcessor
 	logger *slog.Logger
 
@@ -28,17 +29,11 @@ type Strategy struct {
 	// orderResultChan chan OrderSubmissionResult // Define this struct if needed for tracking
 }
 
-// OrderSubmissionResult might be used to track outcomes if needed
-// type OrderSubmissionResult struct {
-// 	ClientOrderID string // Our internal ID for the order
-// 	ExchangeOrderID string // ID returned by the exchange
-// 	Err error
-// }
-
 // NewStrategy creates a new Bybit-Injective strategy.
+// Accept clients by interface type for better modularity.
 func NewStrategy(ctx context.Context, cfg *config.Config,
-	bybitClient *bybit.Client,
-	injectiveClient *injective.Client,
+	bybitClient bybit.ExchangeClient,
+	injectiveClient types.ExchangeClient,
 	priceProcessor *processor.PriceProcessor,
 ) *Strategy {
 	strategyCtx, cancel := context.WithCancel(ctx)
@@ -64,8 +59,15 @@ func (s *Strategy) Run() {
 	s.logger.Info("Bybit-Injective Strategy started.")
 	defer s.logger.Info("Bybit-Injective Strategy stopped.")
 
-	// Listen for orderbook update signals from the Bybit client
-	obUpdateSignalChan := s.bybitClient.OrderbookUpdates()
+	// Ensure the bybitClient actually provides orderbook updates
+	bybitWithUpdates, ok := s.bybitClient.(interface{ OrderbookUpdates() <-chan struct{} })
+	if !ok {
+		s.logger.Error("Bybit client does not provide OrderbookUpdates channel. Strategy cannot run.")
+		// Handle this fatal configuration error
+		return
+	}
+	obUpdateSignalChan := bybitWithUpdates.OrderbookUpdates()
+
 
 	for {
 		select {
@@ -75,16 +77,14 @@ func (s *Strategy) Run() {
 
 		case _, ok := <-obUpdateSignalChan:
 			if !ok {
-				s.logger.Error("Bybit orderbook update channel closed. Strategy cannot continue without price feed.")
-				// Handle this critical error - maybe attempt to reconnect Bybit or shut down?
-				// For now, we'll exit the loop.
+				s.logger.Error("Bybit orderbook update channel closed. Connection lost. Strategy cannot continue without price feed.")
+				// Handle this critical error - potentially rely on Bybit client's reconnect or signal shutdown
 				return
 			}
 
 			s.logger.Debug("Received orderbook update signal from Bybit. Processing...")
 
 			// Get the latest orderbook snapshot from the Bybit client
-			// The Bybit client's GetOrderbook() returns a snapshot, which is safe to use here.
 			obSnapshot := s.bybitClient.GetOrderbook()
 			if obSnapshot == nil || obSnapshot.Instrument == nil {
 				s.logger.Warn("Received update signal but Bybit orderbook snapshot is nil or invalid. Skipping processing.")
@@ -95,70 +95,47 @@ func (s *Strategy) Run() {
 			bidOrder, askOrder, shouldQuote, err := s.priceProcessor.ProcessOrderbook(obSnapshot)
 			if err != nil {
 				s.logger.Error("Price processor failed to generate quotes", "error", err)
-				// Decide how to handle processor errors - log, metrics, kill switch?
 				continue // Continue processing next OB update
 			}
 
 			if shouldQuote {
-				s.logger.Info("Processor generated quotes, attempting to submit orders", "bid", bidOrder, "ask", askOrder)
+				s.logger.Info("Processor generated quotes, attempting to replace orders.")
 
-				// --- Submit Orders (Fire-and-Forget with Goroutines) ---
-				// Submit the bid order
-				go s.submitSingleOrder(s.ctx, bidOrder)
+				// --- Replace Orders using the Injective Client ---
+				ordersToPlace := []*types.Order{}
+				if bidOrder != nil {
+					ordersToPlace = append(ordersToPlace, bidOrder)
+				}
+				if askOrder != nil {
+					ordersToPlace = append(ordersToPlace, askOrder)
+				}
 
-				// Submit the ask order
-				go s.submitSingleOrder(s.ctx, askOrder)
+				// Call ReplaceQuotes (Fire-and-Forget)
+				// This method is expected to handle the TX building, signing, and queuing internally
+				go func() {
+					// Use a new context derived from the strategy context for the goroutine
+					// This allows the goroutine to be cancelled if the strategy shuts down.
+					submitCtx, cancel := context.WithCancel(s.ctx)
+					defer cancel()
 
-				// If you were tracking results:
-				// go s.submitSingleOrder(s.ctx, bidOrder, s.orderResultChan)
-				// go s.submitSingleOrder(s.ctx, askOrder, s.orderResultChan)
+					// The Injective client's ReplaceQuotes should return queued order IDs or an error
+					queuedOrderIDs, submitErr := s.injectiveClient.ReplaceQuotes(submitCtx, obSnapshot.Instrument, ordersToPlace)
+
+					if submitErr != nil {
+						s.logger.Error("Failed to queue replace quotes transaction", "error", submitErr, "instrument", obSnapshot.Instrument.Symbol)
+						// Handle submission failure (e.g., log, alert, retry strategy - complex!)
+					} else {
+						s.logger.Info("Replace quotes transaction queued successfully",
+							"instrument", obSnapshot.Instrument.Symbol,
+							"queued_order_cids", queuedOrderIDs)
+						// Note: queuedOrderIDs are Client IDs (Cids) returned by our client.
+						// Tracking their status on chain requires more logic.
+					}
+				}()
 			}
-
-		// Optional: Handle order submission results if you implemented the channel
-		// case result := <-s.orderResultChan:
-		// 	if result.Err != nil {
-		// 		s.logger.Error("Order submission failed", "client_order_id", result.ClientOrderID, "error", result.Err)
-		// 		// Implement retry logic, risk management, etc. here
-		// 	} else {
-		// 		s.logger.Info("Order submitted successfully", "client_order_id", result.ClientOrderID, "exchange_order_id", result.ExchangeOrderID)
-		// 		// Track open orders, update positions, etc.
-		// 	}
 		}
 	}
 }
-
-// submitSingleOrder is a helper to submit a single order in a goroutine.
-// It encapsulates the call to the Injective client and error handling.
-func (s *Strategy) submitSingleOrder(ctx context.Context, order *types.Order /*, resultChan chan<- OrderSubmissionResult // Add if tracking results */) {
-	// Use a derived context with timeout for the submission if needed, or just pass the strategy context
-	// submitCtx, cancel := context.WithTimeout(ctx, 10*time.Second) // Example timeout
-	// defer cancel()
-
-	s.logger.Info("Submitting order...", "order", order)
-
-	exchangeOrderID, err := s.injectiveClient.SubmitOrder(ctx, *order) // Pass order by value if SubmitOrder expects value
-	// Or pass pointer if SubmitOrder expects pointer: exchangeOrderID, err := s.injectiveClient.SubmitOrder(ctx, order)
-
-
-	if err != nil {
-		s.logger.Error("Order submission failed", "order", order, "error", err)
-		// Decide on retry strategy, alerting, etc.
-		// If using result channel:
-		// select {
-		// case resultChan <- OrderSubmissionResult{ClientOrderID: "TODO", Err: err}: // Need a ClientOrderID on types.Order
-		// default: s.logger.Error("Failed to send order submission result to channel")
-		// }
-	} else {
-		s.logger.Info("Order submitted successfully", "order", order, "exchange_order_id", exchangeOrderID)
-		// Track the order lifecycle using exchangeOrderID
-		// If using result channel:
-		// select {
-		// case resultChan <- OrderSubmissionResult{ClientOrderID: "TODO", ExchangeOrderID: exchangeOrderID}: // Need a ClientOrderID
-		// default: s.logger.Error("Failed to send order submission result to channel")
-		// }
-	}
-}
-
 
 // Close cleans up the Strategy resources.
 func (s *Strategy) Close() error {
@@ -167,3 +144,6 @@ func (s *Strategy) Close() error {
 	// No other resources managed directly by the strategy need closing beyond its context.
 	return nil
 }
+
+// No longer needed as ReplaceQuotes handles batch submission
+// func (s *Strategy) submitSingleOrder(...) { ... }

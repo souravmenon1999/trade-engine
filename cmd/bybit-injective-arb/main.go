@@ -1,4 +1,4 @@
-// cmd/bybit-injective-arb/main.go
+// cmd/bybit-injective-arb/main.go - Updated main
 package main
 
 import (
@@ -9,11 +9,11 @@ import (
 	"syscall"
 	"time"
 	"github.com/souravmenon1999/trade-engine/internal/config"
-	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
-	"github.com/souravmenon1999/trade-engine/internal/exchange/injective"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit" // Import concrete type for NewClient
+	"github.com/souravmenon1999/trade-engine/internal/exchange/injective" // Import concrete type for NewClient
 	"github.com/souravmenon1999/trade-engine/internal/logging"
 	"github.com/souravmenon1999/trade-engine/internal/processor"
-	"github.com/souravmenon1999/trade-engine/internal/strategy/bybitinjective" // Import the strategy
+	"github.com/souravmenon1999/trade-engine/internal/strategy/bybitinjective" // Import strategy
 )
 
 func main() {
@@ -34,19 +34,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // Ensure application context is cancelled on exit
 
-	// Initialize Bybit Client 
+	// --- Initialize Exchange Clients ---
+	// Initialize Bybit Client (M2) - cast to interface when passing to strategy
 	bybitClient := bybit.NewClient(ctx, &cfg.Bybit)
 	err = bybitClient.SubscribeOrderbook(ctx, cfg.Bybit.Symbol)
 	if err != nil {
 		logger.Error("Failed to start Bybit orderbook subscription", "error", err)
-		// App can technically run without Bybit data, but trading won't occur.
-		// Decide if this is a fatal error for your specific bot.
+		// Decide if this is fatal
 	} else {
         logger.Info("Bybit orderbook subscription initiated.")
     }
 
-
-	// Initialize Injective Client 
+	// Initialize Injective Client (M3 - now functional) - cast to interface when passing to strategy
+	// Ensure private key is handled securely (e.g., from env var) in config loading or here
+	// For demonstration, assuming cfg.Injective.PrivateKey holds the value
 	injectiveClient, err := injective.NewClient(ctx, &cfg.Injective)
 	if err != nil {
 		logger.Error("Failed to initialize Injective client", "error", err)
@@ -55,11 +56,12 @@ func main() {
 		logger.Info("Injective client initialized.")
 	}
 
-	// Initialize Price Processor 
+	// --- Initialize Price Processor (M4) ---
 	priceProcessor := processor.NewPriceProcessor(ctx, &cfg.Processor, &cfg.Order)
 	logger.Info("Price Processor initialized.")
 
-	// Initialize and Run Strategy 
+	// --- Initialize and Run Strategy (M5) ---
+	// Pass clients as interfaces
 	strategy := bybitinjective.NewStrategy(ctx, cfg, bybitClient, injectiveClient, priceProcessor)
 
 	// Start the strategy's main execution loop in a goroutine
@@ -77,21 +79,15 @@ func main() {
 	logger.Info("Shutting down gracefully...")
 
 	// --- Clean up resources ---
-	// Cancel the root context. This signals cancellation to all components
-	// created with derived contexts (Strategy, Clients, Processor).
+	// Cancel the root context.
 	cancel()
 
-	// Give goroutines a moment to respond to context cancellation and finish
-	// their current tasks (like processing a final message or logging).
-    // The strategy's Run loop and client read loops should stop shortly after context cancellation.
-    // We might need to wait for goroutines to finish explicitly with a sync.WaitGroup
-    // in a more robust shutdown, but for now, a short sleep is a simple way
-    // to allow cleanup logging to occur.
-    time.Sleep(time.Millisecond * 500) // Adjust as needed
+	// Give goroutines time to stop after context cancellation.
+	// A WaitGroup is more robust, but a sleep is simpler for demonstration.
+    time.Sleep(time.Millisecond * 500)
 
-	// Close components explicitly if they have specific Close methods (they should)
-	// These Close methods should ideally handle nil checks and be safe to call even if
-	// context cancellation has already started cleanup.
+	// Close components explicitly
+	// Close Strategy first as it uses clients and processor
 	err = strategy.Close()
 	if err != nil {
 		logger.Error("Error during Strategy shutdown", "error", err)
@@ -99,6 +95,7 @@ func main() {
 		logger.Info("Strategy shut down successfully.")
 	}
 
+	// Close Price Processor (no real resources, but good practice)
 	err = priceProcessor.Close()
 	if err != nil {
 		logger.Error("Error during Price Processor shutdown", "error", err)
@@ -106,6 +103,7 @@ func main() {
 		logger.Info("Price Processor shut down successfully.")
 	}
 
+	// Close Clients
 	err = injectiveClient.Close()
 	if err != nil {
 		logger.Error("Error during Injective client shutdown", "error", err)

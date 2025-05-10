@@ -1,8 +1,9 @@
-// internal/types/orderbook.go
+// internal/types/orderbook.go - Using provided code
 package types
 
 import (
-	//"errors" 
+	//"errors" // Already imported by types.go
+	 // Make sure math is imported
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -77,10 +78,9 @@ func (ob *Orderbook) BestAsk() (uint64, bool) {
 }
 
 
-
 // MidPrice calculates the mid-price (average of best bid and best ask).
-// Returns the mid-price as float64 (unscaled) and an error if best bid/ask are not available.
-func (ob *Orderbook) MidPrice() (float64, error) { // Changed float66 to float64
+// Returns the mid-price as float64 (unscaled) and a TradingError if best bid/ask are not available.
+func (ob *Orderbook) MidPrice() (float64, error) {
 	bestBid, bidFound := ob.BestBid()
 	bestAsk, askFound := ob.BestAsk()
 
@@ -89,7 +89,7 @@ func (ob *Orderbook) MidPrice() (float64, error) { // Changed float66 to float64
 		return 0.0, TradingError{
 			Code:    ErrInsufficientLiquidity,
 			Message: "Best bid or ask not found",
-			Wrapped: ErrBaseInsufficientLiquidity, // Make sure ErrBaseInsufficientLiquidity is defined and exported or accessible
+			Wrapped: ErrBaseInsufficientLiquidity,
 		}
 	}
 

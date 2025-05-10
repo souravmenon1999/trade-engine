@@ -4,6 +4,9 @@ package exchange
 import (
 	"context"
 	"github.com/souravmenon1999/trade-engine/internal/types"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/injective"
+
 )
 
 // ExchangeClient defines the common interface for interacting with exchanges.
@@ -15,6 +18,18 @@ type ExchangeClient interface {
 	// SubmitOrder sends an order to the exchange.
 	// Returns the exchange's order ID on success.
 	SubmitOrder(ctx context.Context, order types.Order) (string, error)
+
+ // CancelAllOrders cancels all open orders for a given instrument on the exchange.
+	// This is useful for clearing the books.
+	CancelAllOrders(ctx context.Context, instrument *types.Instrument) error
+
+	// ReplaceQuotes atomically cancels existing quotes for an instrument
+	// (typically all for a market/subaccount) and places the provided new orders.
+	// This is suitable for strategies that update their entire quote.
+	// Returns IDs for the newly placed orders.
+	ReplaceQuotes(ctx context.Context, instrument *types.Instrument, ordersToPlace []*types.Order) ([]string, error)
+
+
 
 	// Close cleans up any resources (connections, goroutines).
 	Close() error
