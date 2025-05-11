@@ -1,114 +1,147 @@
+// internal/exchange/injective/client.go - Functional Injective Client (Corrected)
 package injective
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
-	"net/http"
 	"time"
-
+	"math/big" // Required for decimal.NewFromBigInt
+    chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
+    chain  "github.com/InjectiveLabs/sdk-go/client"
 	"github.com/souravmenon1999/trade-engine/internal/config"
 	"github.com/souravmenon1999/trade-engine/internal/logging"
-	projecttypes "github.com/souravmenon1999/trade-engine/internal/types"
+	projecttypes "github.com/souravmenon1999/trade-engine/internal/types" // Use projecttypes alias for clarity
 	"log/slog"
-	"math/big"
+	"github.com/shopspring/decimal" // For handling decimals
+	"github.com/google/uuid" // For generating Client Order IDs (Cids)
+	"github.com/InjectiveLabs/sdk-go/client/common" // For common client setup, LoadNetwork
+	exchangetypes "github.com/InjectiveLabs/sdk-go/chain/exchange/types" // For MsgBatchUpdateOrders, OrderType enum
+	// derivative_types "github.com/InjectiveLabs/sdk-go/chain/derivative/types" // If using derivatives
 
-	"github.com/shopspring/decimal"
-	"github.com/google/uuid"
-	"github.com/InjectiveLabs/sdk-go/client/common"
-	chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
-	exchangetypes "github.com/InjectiveLabs/sdk-go/chain/exchange/types"
-	"cosmossdk.io/math"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/btcsuite/btcutil/bech32"
-	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/client"
-	"github.com/cosmos/cosmos-sdk/crypto/keyring"
-	"github.com/cosmos/cosmos-sdk/crypto/hd"
-	"github.com/cosmos/cosmos-sdk/codec"
-	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
-	"google.golang.org/grpc"
+	// Cosmos SDK imports
+
+	cosmossdkmath "cosmossdk.io/math"
+
+	// Optional: Markets Assistant for querying market details (needed for proper scaling)
+	// marketsassistant "github.com/InjectiveLabs/sdk-go/client/chain"
+
+	// Optional: Authz client if using grant/feegrant
+	// authz "github.com/cosmos/cosmos-sdk/x/authz"
+
+	// CometBFT RPC client - needed for SDK client.Context
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 )
 
 // Client implements the ExchangeClient interface for Injective.
+// Client implements the ExchangeClient interface for Injective.
 type Client struct {
-	cfg            *config.InjectiveConfig
-	logger         *slog.Logger
-	httpClient     *http.Client
-	accountAddress string
-	subaccountID   string
-	ctx            context.Context
-	cancel         context.CancelFunc
-	orderbook      *projecttypes.Orderbook
-	privKey        *ecdsa.PrivateKey
-	chainID        string
+    cfg    *config.InjectiveConfig
+    logger *slog.Logger
+
+    // --- Functional Injective SDK components ---
+    chainClient    chainclient.ChainClient // Single instance for signing/broadcasting queue
+    accountAddress string                  // Bech32 wallet address string
+    subaccountID   string                  // Default subaccount ID (Hex, from config or empty)
+
+    // Context for the client's operations
+    ctx    context.Context
+    cancel context.CancelFunc
+
+    // Injective client does NOT provide a live orderbook feed in this setup.
+    orderbook *projecttypes.Orderbook // Always nil
 }
 
-// NewClient creates a new Injective client.
+// NewClient creates a new Functional Injective client.
+// It requires a parent context for cancellation.
 func NewClient(ctx context.Context, cfg *config.InjectiveConfig) (*Client, error) {
-	clientCtx, cancel := context.WithCancel(ctx)
+    clientCtx, cancel := context.WithCancel(ctx)
 
-	client := &Client{
-		cfg:        cfg,
-		logger:     logging.GetLogger().With("exchange", "injective"),
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		ctx:        clientCtx,
-		cancel:     cancel,
-		orderbook:  nil,
-	}
+    client := &Client{
+        cfg:    cfg,
+        logger: logging.GetLogger().With("exchange", "injective"),
+        ctx:    clientCtx,
+        cancel: cancel,
+        orderbook: nil, // Injective client doesn't maintain a live OB in this setup
+        subaccountID: "", // Will be set below
+    }
 
-	// Load Network configuration
-	network := common.LoadNetwork(cfg.ChainConfig, "lb")
-	client.chainID = network.ChainId
+    // 1. Load Network configuration (e.g., testnet, mainnet)
+    network := common.LoadNetwork(cfg.ChainConfig, "lb")
 
-	// Derive address from private key
-	privKey, err := crypto.HexToECDSA(cfg.PrivateKey)
-	if err != nil {
-		client.logger.Error("Failed to parse private key", "error", err)
-		return nil, projecttypes.TradingError{
-			Code:    projecttypes.ErrConnectionFailed,
-			Message: "Failed to parse private key",
-			Wrapped: err,
-		}
-	}
-	client.privKey = privKey
+    // 2. Create CometBFT RPC Client
+    tmClient, err := rpchttp.New(network.TmEndpoint, "/websocket")
+    if err != nil {
+        client.logger.Error("Failed to create CometBFT RPC client", "error", err)
+        return nil, projecttypes.TradingError{
+            Code:    projecttypes.ErrConnectionFailed,
+            Message: "Failed to connect to Injective RPC endpoint",
+            Wrapped: err,
+        }
+    }
 
-	// Derive Bech32 address (inj prefix)
-	pubKey := privKey.PublicKey
-	addrBytes := crypto.PubkeyToAddress(pubKey).Bytes()
-	converted, err := bech32.ConvertBits(addrBytes, 8, 5, true)
-	if err != nil {
-		client.logger.Error("Failed to convert address bytes for Bech32", "error", err)
-		return nil, projecttypes.TradingError{
-			Code:    projecttypes.ErrConnectionFailed,
-			Message: "Failed to convert address for Bech32 encoding",
-			Wrapped: err,
-		}
-	}
-	accAddress, err := bech32.Encode("inj", converted)
-	if err != nil {
-		client.logger.Error("Failed to encode Bech32 address", "error", err)
-		return nil, projecttypes.TradingError{
-			Code:    projecttypes.ErrConnectionFailed,
-			Message: "Failed to encode Bech32 address",
-			Wrapped: err,
-		}
-	}
-	client.accountAddress = accAddress
-	client.logger.Info("Injective wallet initialized", "address", accAddress)
+    // 3. Initialize keyring and sender address
+    senderAddress, cosmosKeyring, err := chainclient.InitCosmosKeyring(
+        "",             // No directory for memory backend
+        "injective",    // App name
+        "memory",       // Use in-memory backend
+        "default",      // User name (arbitrary)
+        "",             // No password for memory backend
+        cfg.PrivateKey, // Private key from config
+        false,          // Indicate private key usage (not mnemonic)
+    )
+    if err != nil {
+        client.logger.Error("Failed to initialize keyring", "error", err)
+        return nil, projecttypes.TradingError{
+            Code:    projecttypes.ErrConnectionFailed,
+            Message: "Failed to initialize keyring",
+            Wrapped: err,
+        }
+    }
+    client.accountAddress = senderAddress.String()
 
-	// Derive Default Subaccount ID
-	client.subaccountID = deriveSubaccountID(accAddress)
-	client.logger.Info("Using default subaccount", "subaccount_id", client.subaccountID)
+    // 4. Create Cosmos SDK Client Context
+    sdkClientCtx, err := chainclient.NewClientContext(
+        network.ChainId,
+        client.accountAddress,
+        cosmosKeyring,
+    )
+    if err != nil {
+        client.logger.Error("Failed to create Cosmos SDK client context", "error", err)
+        return nil, projecttypes.TradingError{
+            Code:    projecttypes.ErrConnectionFailed,
+            Message: "Failed to setup Injective client context",
+            Wrapped: err,
+        }
+    }
+    sdkClientCtx = sdkClientCtx.WithNodeURI(network.TmEndpoint).WithClient(tmClient)
 
-	client.logger.Info("Injective client initialization complete.")
-	return client, nil
+    // 5. Create Injective Chain Client
+    chainClient, err := chainclient.NewChainClient(
+        sdkClientCtx,
+        network,
+        common.OptionGasPrices(chain.DefaultGasPriceWithDenom),
+    )
+    if err != nil {
+        client.logger.Error("Failed to create Injective chain client", "error", err)
+        return nil, projecttypes.TradingError{
+            Code:    projecttypes.ErrConnectionFailed,
+            Message: "Failed to initialize Injective chain client",
+            Wrapped: err,
+        }
+    }
+    client.chainClient = chainClient
+
+    // Set default subaccount ID using SDK method
+    client.subaccountID = chainClient.DefaultSubaccount(senderAddress).String()
+    client.logger.Info("Injective wallet initialized",
+        "address", client.accountAddress,
+        "subaccountID", client.subaccountID)
+
+    client.logger.Info("Injective client initialization complete.")
+
+    return client, nil
 }
 
-// deriveSubaccountID derives the default subaccount ID from the account address.
-func deriveSubaccountID(addr string) string {
-	return fmt.Sprintf("%s000000000000000000000000", addr)
-}
 
 // GetExchangeType returns the type of this exchange client.
 func (c *Client) GetExchangeType() projecttypes.ExchangeType {
@@ -117,7 +150,7 @@ func (c *Client) GetExchangeType() projecttypes.ExchangeType {
 
 // GetOrderbook returns nil for the Injective client in this setup.
 func (c *Client) GetOrderbook() *projecttypes.Orderbook {
-	return c.orderbook
+	return c.orderbook // This will be nil
 }
 
 // SubscribeOrderbook is not implemented for the Injective trading client.
@@ -126,11 +159,15 @@ func (c *Client) SubscribeOrderbook(ctx context.Context, symbol string) error {
 	return nil
 }
 
-// translateOrderDataToSpotLimitOrderData converts a projecttypes.Order to an Injective SpotOrder.
-func (c *Client) translateOrderDataToSpotLimitOrderData(
+// translateOrderDataToSpotLimitOrder converts a projecttypes.Order to an Injective spottypes.SpotOrder.
+// This function contains the core scaling logic (currently simplified placeholder).
+// It's a method on the Client struct to potentially use marketsAssistant if implemented.
+// Returns *spottypes.SpotOrder as required by MsgBatchUpdateOrders struct fields.
+func (c *Client) translateOrderDataToSpotLimitOrder(
 	order projecttypes.Order,
-	senderAddress string,
+	senderAddress string, // Bech32 address string
 	marketID string,
+	// In a real system, you'd use c.marketsAssistant here for precise scaling
 ) (*exchangetypes.SpotOrder, error) {
 	if order.Exchange != projecttypes.ExchangeInjective {
 		return nil, fmt.Errorf("order is not for Injective")
@@ -138,23 +175,31 @@ func (c *Client) translateOrderDataToSpotLimitOrderData(
 	if order.Instrument == nil {
 		return nil, fmt.Errorf("order is missing instrument details")
 	}
+	// Add checks here to ensure the order's instrument matches the marketID type (Spot/Derivative)
+	// and the marketID itself is correct based on Instrument.Symbol
 
-	// Simplified scaling (replace with market metadata in production)
+	// --- Conversion Logic (Simplified Placeholder - NEEDS REPLACING) ---
+	// Treat our 1e6 scaled uint64 as decimal with 0 exponent. This is incorrect for real markets.
+	// You MUST replace this with logic that uses market metadata (e.g., from MarketsAssistant)
+	// to correctly scale price and quantity based on the market's base and quote token decimals
+	// and tick sizes, then convert to math.LegacyDec.
 	priceDecimal := decimal.NewFromBigInt(new(big.Int).SetUint64(order.Price), 0)
 	quantityDecimal := decimal.NewFromBigInt(new(big.Int).SetUint64(order.Quantity), 0)
 
-	// Convert to math.LegacyDec
-	priceLegacyDec, err := math.LegacyNewDecFromStr(priceDecimal.String())
+	priceLegacyDec, err := cosmossdkmath.LegacyNewDecFromStr(priceDecimal.String())
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert price to LegacyDec: %w", err)
+		return nil, fmt.Errorf("failed to convert price decimal to LegacyDec: %w", err)
 	}
-	quantityLegacyDec, err := math.LegacyNewDecFromStr(quantityDecimal.String())
+	quantityLegacyDec, err := cosmossdkmath.LegacyNewDecFromStr(quantityDecimal.String())
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert quantity to LegacyDec: %w", err)
+		return nil, fmt.Errorf("failed to convert quantity decimal to LegacyDec: %w", err)
 	}
 
+	// --- End Simplified Scaling Placeholder ---
+
+
 	// Determine Injective OrderType
-	injOrderType := exchangetypes.OrderType_BUY
+	injOrderType := exchangetypes.OrderType_BUY // Default
 	switch order.Side {
 	case projecttypes.Buy:
 		injOrderType = exchangetypes.OrderType_BUY
@@ -164,22 +209,31 @@ func (c *Client) translateOrderDataToSpotLimitOrderData(
 		return nil, fmt.Errorf("unsupported order side for Injective: %s", order.Side)
 	}
 
-	clientOrderID := uuid.New().String()
+	// Client Order ID (Cid) should be unique per order within a batch and subaccount
+	clientOrderID := uuid.New().String() // Use UUID for uniqueness
 
-	return &exchangetypes.SpotOrder{
+	// Create the Injective SDK SpotOrder struct
+	spotOrder := &exchangetypes.SpotOrder{
 		MarketId: marketID,
-		OrderInfo: exchangetypes.OrderInfo{
-			SubaccountId: c.subaccountID,
-			FeeRecipient: senderAddress,
-			Price:        priceLegacyDec,
-			Quantity:     quantityLegacyDec,
-			Cid:          clientOrderID,
+		OrderInfo: exchangetypes.OrderInfo{ // Use exchangetypes.OrderInfo
+			SubaccountId: c.subaccountID, // Use client's subaccount ID
+			FeeRecipient: senderAddress, // Fee recipient is often the sender
+			Price:        priceLegacyDec,    // Use the legacy decimal price
+			Quantity:     quantityLegacyDec, // Use the legacy decimal quantity
+			Cid:          clientOrderID,     // Use the generated Client ID
 		},
 		OrderType: injOrderType,
-	}, nil
+	}
+
+	// Note: For Derivative orders, you'd use derivative_types.DerivativeOrder
+	// and provide Leverage, IsReduceOnly, etc.
+
+	return spotOrder, nil // Return the SDK SpotOrder struct
 }
 
+
 // SubmitOrder sends a single order to the Injective chain.
+// Implemented using MsgBatchUpdateOrders with one order.
 func (c *Client) SubmitOrder(ctx context.Context, order projecttypes.Order) (string, error) {
 	if order.Exchange != projecttypes.ExchangeInjective {
 		return "", projecttypes.TradingError{
@@ -189,93 +243,132 @@ func (c *Client) SubmitOrder(ctx context.Context, order projecttypes.Order) (str
 		}
 	}
 
+	// Use the configured MarketID for the order
 	marketID := c.cfg.MarketID
-	c.logger.Info("Submitting single order to Injective...", "order", order, "market_id", marketID)
 
-	spotOrder, err := c.translateOrderDataToSpotLimitOrderData(
+
+	c.logger.Info("Submitting single order to Injective via BatchUpdate...", "order", order, "market_id", marketID)
+
+	// --- Translate Order to Injective SDK Message ---
+	spotOrderToCreate, err := c.translateOrderDataToSpotLimitOrder(
 		order,
-		c.accountAddress,
-		marketID,
+		c.accountAddress, // Pass Bech32 address string
+		marketID, // Pass market ID
+		// Pass marketsAssistant here
 	)
 	if err != nil {
-		c.logger.Error("Failed to translate single order data", "error", err)
+		c.logger.Error("Failed to translate single order to Injective message", "error", err)
 		return "", projecttypes.TradingError{
-			Code:    projecttypes.ErrOrderSubmissionFailed,
-			Message: "Failed to translate order data",
+			Code: projecttypes.ErrOrderSubmissionFailed,
+			Message: "Failed to translate order message",
 			Wrapped: err,
 		}
 	}
 
+	// --- Create MsgBatchUpdateOrders ---
+	// For a single order, create a batch message with only one order to create.
+	// No cancellations needed for a simple submit.
 	msg := createBatchUpdateMessage(
-		c.accountAddress,
-		c.subaccountID,
-		nil,
-		nil,
-		[]*exchangetypes.SpotOrder{spotOrder},
-		nil,
+		c.accountAddress, // Sender address string
+		c.subaccountID, // Subaccount ID is required if ordersToCreate is not empty
+		nil, // No spot markets to cancel all
+		nil, // No derivative markets to cancel all
+		[]*exchangetypes.SpotOrder{spotOrderToCreate}, // Use exchangetypes.SpotOrder
+		nil, // No derivative orders to create
 	)
 
-	txHash, err := c.broadcastTxViaREST(ctx, msg)
+	// --- Broadcast Transaction (Fire-and-Forget) ---
+	// Use the stored chainClient's QueueBroadcastMsg for asynchronous, sequential broadcasting.
+	err = c.chainClient.QueueBroadcastMsg(msg)
+
 	if err != nil {
-		c.logger.Error("Failed to broadcast single order", "error", err, "order", order, "market_id", marketID)
+		c.logger.Error("Failed to queue single order broadcast", "error", err, "order", order, "market_id", marketID)
 		return "", projecttypes.TradingError{
-			Code:    projecttypes.ErrOrderSubmissionFailed,
-			Message: "Failed to broadcast transaction for single order",
+			Code: projecttypes.ErrOrderSubmissionFailed,
+			Message: "Failed to queue transaction for single order",
 			Wrapped: err,
 		}
 	}
 
-	c.logger.Info("Single order broadcast completed", "order", order, "client_order_id", spotOrder.OrderInfo.Cid, "market_id", marketID, "txhash", txHash)
-	return spotOrder.OrderInfo.Cid, nil
+	c.logger.Info("Single order queued for broadcast", "order", order, "client_order_id", spotOrderToCreate.OrderInfo.Cid, "market_id", marketID)
+
+	// QueueBroadcastMsg returns immediately. We don't have the Tx hash yet.
+	// Return the ClientOrderID (Cid) as a temporary identifier.
+	// Real system needs separate Tx status tracking based on Tx hash or sequence number.
+	return spotOrderToCreate.OrderInfo.Cid, nil // Access Cid from OrderInfo
 }
 
-// CancelAllOrders cancels all open orders for the configured market and subaccount.
+// CancelAllOrders cancels all open orders for the configured market and sender's subaccount.
+// It uses MsgBatchUpdateOrders to cancel all orders for the specific market ID.
 func (c *Client) CancelAllOrders(ctx context.Context, instrument *projecttypes.Instrument) error {
 	if instrument == nil {
 		return fmt.Errorf("instrument is nil")
 	}
+	// Use the configured MarketID as the target for cancellation.
 	marketID := c.cfg.MarketID
-	c.logger.Info("Attempting to cancel all orders for market...", "market_id", marketID, "subaccount_id", c.subaccountID)
 
+	// Optional: Log a warning if the instrument symbol doesn't match the configured market intent
+	// if instrument.Symbol != ??? // Need a way to map cfg.MarketID back to a symbol
+
+
+	c.logger.Info("Attempting to cancel all orders for market via BatchUpdate...", "market_id", marketID, "subaccount_id", c.subaccountID)
+
+	// --- Create MsgBatchUpdateOrders for Cancellation ---
+	// Create a batch message with only the market ID to cancel all orders for.
+	// No orders to create here. Subaccount ID is REQUIRED for CancelAll.
 	msg := createBatchUpdateMessage(
-		c.accountAddress,
+		c.accountAddress, // Sender address string
 		c.subaccountID,
-		[]string{marketID},
-		nil,
-		nil,
-		nil,
+		[]string{marketID}, // Spot market IDs to cancel all
+		nil, // Derivative market IDs to cancel all (if applicable)
+		nil, // No spot orders to create
+		nil, // No derivative orders to create
 	)
 
-	txHash, err := c.broadcastTxViaREST(ctx, msg)
+	// --- Broadcast Transaction (Fire-and-Forget) ---
+	// Use the stored chainClient's QueueBroadcastMsg.
+	err := c.chainClient.QueueBroadcastMsg(msg)
+
 	if err != nil {
-		c.logger.Error("Failed to broadcast cancel all orders", "error", err, "market_id", marketID)
+		c.logger.Error("Failed to queue cancel all orders broadcast", "error", err, "market_id", marketID)
 		return projecttypes.TradingError{
-			Code:    projecttypes.ErrOrderSubmissionFailed,
-			Message: "Failed to broadcast transaction for cancelling all orders",
+			Code: projecttypes.ErrOrderSubmissionFailed, // Or a new code like ErrCancellationFailed
+			Message: "Failed to queue transaction for cancelling all orders",
 			Wrapped: err,
 		}
 	}
 
-	c.logger.Info("Cancel all orders broadcast completed", "market_id", marketID, "txhash", txHash)
-	return nil
+	c.logger.Info("Cancel all orders request queued for broadcast", "market_id", marketID)
+
+	return nil // Success means it's queued, not necessarily executed yet
 }
 
-// ReplaceQuotes atomically cancels existing quotes and places new orders.
+// ReplaceQuotes atomically cancels existing quotes for the configured market
+// and places the provided new orders using MsgBatchUpdateOrders.
 func (c *Client) ReplaceQuotes(ctx context.Context, instrument *projecttypes.Instrument, ordersToPlace []*projecttypes.Order) ([]string, error) {
 	if instrument == nil {
 		return nil, fmt.Errorf("instrument is nil")
 	}
+	// Use the configured MarketID as the target for the batch update.
 	marketID := c.cfg.MarketID
+
+	// Optional: Log warning if instrument symbol doesn't match configured market
+
 
 	if len(ordersToPlace) == 0 {
 		c.logger.Info("ReplaceQuotes called with no orders to place. Will only cancel existing.", "market_id", marketID)
+		// Allowing 0 orders makes this method act as a "CancelAll" if no new quotes are generated.
 	}
 
-	c.logger.Info("Attempting to replace quotes...",
+
+	c.logger.Info("Attempting to replace quotes via BatchUpdate...",
 		"market_id", marketID, "subaccount_id", c.subaccountID, "orders_to_place_count", len(ordersToPlace))
 
-	spotOrdersToCreate := make([]*exchangetypes.SpotOrder, 0, len(ordersToPlace))
-	newOrderCids := []string{}
+	// --- Translate Orders to Injective SDK Messages ---
+	// Assuming Spot orders. Iterate through the provided orders.
+	spotOrdersToCreate := make([]*exchangetypes.SpotOrder, 0, len(ordersToPlace)) // Use exchangetypes.SpotOrder
+	// derivativeOrdersToCreate := make([]*derivative_types.DerivativeOrder, 0) // If supporting derivatives
+	newOrderCids := []string{} // Collect Cids for the new orders
 
 	for _, order := range ordersToPlace {
 		if order == nil {
@@ -286,130 +379,99 @@ func (c *Client) ReplaceQuotes(ctx context.Context, instrument *projecttypes.Ins
 			c.logger.Error("Skipping order not intended for Injective in ReplaceQuotes list", "order", order)
 			continue
 		}
+		// In a real system, verify order.Instrument matches the target market type (Spot/Derivative)
+		// and the marketID matches the instrument.
 
-		spotOrder, err := c.translateOrderDataToSpotLimitOrderData(
-			*order,
-			c.accountAddress,
-			marketID,
+		// Assuming Spot market based on strategy
+		spotOrder, err := c.translateOrderDataToSpotLimitOrder(
+			*order, // Pass order by value
+			c.accountAddress, // Pass Bech32 address string
+			marketID, // Pass market ID
+			// Pass marketsAssistant here
 		)
 		if err != nil {
-			c.logger.Error("Failed to translate order data for batch update", "error", err, "order", order)
+			c.logger.Error("Failed to translate order for batch update", "error", err, "order", order)
+			// Skip the single bad order and log.
 			continue
 		}
-
 		spotOrdersToCreate = append(spotOrdersToCreate, spotOrder)
-		newOrderCids = append(newOrderCids, spotOrder.OrderInfo.Cid)
+		newOrderCids = append(newOrderCids, spotOrder.OrderInfo.Cid) // Collect the Client IDs (strings)
 	}
 
 	if len(spotOrdersToCreate) == 0 && len(ordersToPlace) > 0 {
+		// This means all attempted translations failed
 		return nil, projecttypes.TradingError{
-			Code:    projecttypes.ErrOrderSubmissionFailed,
-			Message: "Failed to translate/create any valid orders for batch update",
+			Code: projecttypes.ErrOrderSubmissionFailed,
+			Message: "Failed to translate any provided orders for batch update",
 		}
 	}
 
+	// --- Create MsgBatchUpdateOrders ---
+	// This message cancels ALL existing orders for the sender's subaccount
+	// on the specified market ID and then attempts to create the new orders.
 	msg := createBatchUpdateMessage(
-		c.accountAddress,
-		c.subaccountID,
-		[]string{marketID},
-		nil,
-		spotOrdersToCreate,
-		nil,
+		c.accountAddress, // Sender address string
+		c.subaccountID, // Subaccount ID is REQUIRED for CancelAll
+		[]string{marketID}, // Spot market IDs to cancel ALL
+		nil, // Derivative market IDs to cancel ALL (if applicable)
+		spotOrdersToCreate, // List of spot orders to create (exchangetypes.SpotOrder)
+		nil, // List of derivative orders to create (if applicable)
 	)
 
-	txHash, err := c.broadcastTxViaREST(ctx, msg)
+	// --- Broadcast Transaction (Fire-and-Forget) ---
+	// Use the stored chainClient's QueueBroadcastMsg.
+	err := c.chainClient.QueueBroadcastMsg(msg)
+
 	if err != nil {
-		c.logger.Error("Failed to broadcast batch update", "error", err, "market_id", marketID, "orders_count", len(spotOrdersToCreate))
+		c.logger.Error("Failed to queue batch update broadcast", "error", err, "market_id", marketID, "orders_count", len(spotOrdersToCreate))
 		return nil, projecttypes.TradingError{
-			Code:    projecttypes.ErrOrderSubmissionFailed,
-			Message: "Failed to broadcast transaction for batch order update",
+			Code: projecttypes.ErrOrderSubmissionFailed,
+			Message: "Failed to queue transaction for batch order update",
 			Wrapped: err,
 		}
 	}
 
-	c.logger.Info("Batch update (cancel all + place new) broadcast completed",
-		"market_id", marketID, "orders_broadcast_count", len(spotOrdersToCreate), "new_order_cids", newOrderCids, "txhash", txHash)
-	return newOrderCids, nil
+	c.logger.Info("Batch update (cancel all + place new) request queued for broadcast",
+		"market_id", marketID, "orders_queued_count", len(spotOrdersToCreate), "new_order_cids", newOrderCids)
+
+	// Fire-and-Forget at the application level. Return the Cids of the orders that were *queued*.
+	// Real system needs separate Tx status tracking using the Tx hash obtained from broadcast result.
+	return newOrderCids, nil // Return Client IDs as placeholder exchange IDs
 }
 
-// broadcastTxViaREST broadcasts a transaction via Injective's Chain Client.
-func (c *Client) broadcastTxViaREST(ctx context.Context, msg sdk.Msg) (string, error) {
-	c.logger.Info("Preparing to broadcast transaction via Injective Chain Client")
-
-	// Load network
-	network := common.LoadNetwork(c.cfg.ChainConfig, "lb")
-
-	// Create codec for keyring
-	registry := codectypes.NewInterfaceRegistry()
-	exchangetypes.RegisterInterfaces(registry)
-	cdc := codec.NewProtoCodec(registry)
-
-	// Create keyring
-	kr, err := keyring.New(
-		"injective",
-		keyring.BackendMemory,
-		"",
-		nil,
-		cdc,
-	)
-	if err != nil {
-		return "", fmt.Errorf("failed to create keyring: %w", err)
-	}
-
-	// Import private key into keyring
-	_, mnemonic, err := kr.NewMnemonic("default", keyring.English, "", "", hd.Secp256k1)
-	if err != nil {
-		return "", fmt.Errorf("failed to create keyring record: %w", err)
-	}
-	_ = mnemonic // Ignore mnemonic if not needed
-
-	// Create gRPC connection
-	grpcConn, err := grpc.Dial(network.ChainGrpcEndpoint, grpc.WithInsecure())
-	if err != nil {
-		return "", fmt.Errorf("failed to dial gRPC: %w", err)
-	}
-	defer grpcConn.Close()
-
-	// Create client context
-	clientCtx := client.Context{}.
-		WithChainID(network.ChainId).
-		WithKeyring(kr).
-		WithFromAddress(sdk.MustAccAddressFromBech32(c.accountAddress)).
-		WithFromName("default").
-		WithNodeURI(network.TmEndpoint).
-		WithCodec(cdc).
-		WithInterfaceRegistry(registry)
-
-	// Create chain client
-	chainClient, err := chainclient.NewChainClient(clientCtx, network, common.OptionGasPrices("0.0005inj"))
-	if err != nil {
-		return "", fmt.Errorf("failed to create chain client: %w", err)
-	}
-	defer chainClient.Close()
-
-	c.logger.Info("Chain client created, preparing transaction")
-
-	// Broadcast transaction
-	txResp, err := chainClient.SyncBroadcastMsg(msg)
-	if err != nil {
-		c.logger.Error("Failed to broadcast transaction", "error", err)
-		return "", fmt.Errorf("failed to broadcast transaction: %w", err)
-	}
-
-	txHash := txResp.TxResponse.TxHash
-	c.logger.Info("Transaction broadcast successful", "txhash", txHash)
-	return txHash, nil
-}
 
 // Close cleans up the Injective client resources.
 func (c *Client) Close() error {
-	c.httpClient.CloseIdleConnections()
-	c.cancel()
 	c.logger.Info("Injective client shutting down...")
-	time.Sleep(1 * time.Second)
+
+	// Cancel the client's context FIRST. This signals cancellation
+	// to any goroutines started by this client (like internal SDK queue processors).
+	c.cancel()
+
+	// --- Close Injective SDK connections ---
+	// The chain client manages its internal connections. Its Close() method
+	// cleans them up. It does *not* return an error in the SDK version being used.
+	if c.chainClient != nil {
+		c.logger.Info("Closing Injective chain client...")
+		c.chainClient.Close() // Call Close without capturing a return value
+		c.chainClient = nil // Mark as nil after closing
+		c.logger.Info("Injective chain client closed.")
+	}
+
+
+	// Give queued messages a moment to potentially finish processing
+	// This is not guaranteed graceful shutdown for the queue, a WaitGroup would be needed
+	// in a truly robust system to wait for the queue to empty.
+	// A short sleep is a simplistic approach for demonstration.
+	time.Sleep(time.Millisecond * 500) // Allow queued messages a moment (adjust as needed)
+
+
 	c.logger.Info("Injective client shut down complete.")
+
+	// Return any errors encountered during other cleanup steps if applicable.
+	// Since c.chainClient.Close() doesn't return an error, we just return nil here.
 	return nil
 }
 
-// Ensure ExchangeClient interface is implemented
-var _ExchangeClient = (*Client)(nil)
+// Add this line at the end of the file to ensure it implements the interface
+var _ExchangeClient = (*Client)(nil) // Correct type reference

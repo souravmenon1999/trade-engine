@@ -1,15 +1,16 @@
 # configs/config.yaml
 bybit:
   ws_url: "wss://stream.bybit.com/v5/public/linear"
-  symbol: "BTCUSDT"
+  symbol: "ETHUSDT"
 injective:
   market_id: "0x54d4505adef6a5cef26bc403a33d595620ded4e15b9e2bc3dd489b714813366a"
-  private_key: "YOUR_INJECTIVE_PRIVATE_KEY" # !! Replace with actual key or env var !!
+  private_key: "e727b7f540777fe9c146ee3177677fc2dac1c46131ba5bf8a977f19c662d6c8b" # !! Replace with actual key or env var !!
+  chain_config: "mainnet"
 order:
   quantity: 0.01
   spread_pct: 10.0
 processor:
   requote_threshold: 0.0 # Percentage price change to trigger requote
-  requote_cooldown: 1   # Seconds cooldown between requotes
+  requote_cooldown: 5   # Seconds cooldown between requotes
 log:
   level: "info" # debug, info, warn, error

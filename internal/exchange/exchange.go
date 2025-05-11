@@ -4,7 +4,7 @@ package exchange
 import (
 	"context"
 	"github.com/souravmenon1999/trade-engine/internal/types"
-	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
+	// "github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
 
 )
 
@@ -44,7 +44,7 @@ type ExchangeClient interface {
 }
 
 // Ensure BybitClient implements the interface (add a dummy SubmitOrder for now)
-var _ ExchangeClient = (*bybit.Client)(nil) // Add this line in internal/exchange/bybit/client.go
+// var _ ExchangeClient = (*bybit.Client)(nil) // Add this line in internal/exchange/bybit/client.go
 
 // Ensure InjectiveClient implements the interface
 // var _ ExchangeClient = (*injective.Client)(nil) // Add this line later in internal/exchange/injective/client.go

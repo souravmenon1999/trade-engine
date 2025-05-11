@@ -2,13 +2,10 @@
 package injective
 
 import (
-	
-
 	cosmostypes "github.com/cosmos/cosmos-sdk/types" // For AccAddress, etc.
 	// --- Corrected Injective Trading Type Imports ---
 	// Use the exchange/types path for trading messages and enums
 	exchangetypes "github.com/InjectiveLabs/sdk-go/chain/exchange/types" // For MsgBatchUpdateOrders, SpotOrder, DerivativeOrder, OrderType enum
-
 )
 
 // Note on Scaling and Decimals:
@@ -23,27 +20,33 @@ import (
 // This messages.go file will now primarily hold the createBatchUpdateMessage function
 // and potentially other message-related helpers that don't rely on client state.
 
-
 // createBatchUpdateMessage builds the MsgBatchUpdateOrders message.
 // It takes the sender's address, subaccount ID, market IDs to cancel all,
 // and lists of orders to create.
 // This returns a cosmostypes.Msg which is the expected input for QueueBroadcastMsg.
 func createBatchUpdateMessage(
-	senderAddress string,
-	subaccountID string,
-	spotMarketIDsToCancelAll []string,
-	derivativeMarketIDsToCancelAll []string,
-	spotOrdersToCreate []*exchangetypes.SpotOrder,
-	derivativeOrdersToCreate []*exchangetypes.DerivativeOrder,
+    senderAddress string,
+    subaccountID string,
+    spotMarketIDsToCancelAll []string,
+    derivativeMarketIDsToCancelAll []string,
+    spotOrdersToCreate []*exchangetypes.SpotOrder,
+    derivativeOrdersToCreate []*exchangetypes.DerivativeOrder,
 ) cosmostypes.Msg {
-	msg := &exchangetypes.MsgBatchUpdateOrders{
-		Sender:                        senderAddress,
-		SubaccountId:                  subaccountID,
-		SpotMarketIdsToCancelAll:      spotMarketIDsToCancelAll,
-		DerivativeMarketIdsToCancelAll: derivativeMarketIDsToCancelAll, // Corrected variable name
-		SpotOrdersToCreate:            spotOrdersToCreate,
-		DerivativeOrdersToCreate:      derivativeOrdersToCreate,
-	}
+    if len(spotMarketIDsToCancelAll) > 0 || len(derivativeMarketIDsToCancelAll) > 0 ||
+       len(spotOrdersToCreate) > 0 || len(derivativeOrdersToCreate) > 0 {
+        if subaccountID == "" {
+            panic("subaccountID is required when canceling all orders or creating orders")
+        }
+    }
 
-	return msg
+    msg := &exchangetypes.MsgBatchUpdateOrders{
+        Sender:                         senderAddress,
+        SubaccountId:                   subaccountID,
+        SpotMarketIdsToCancelAll:       spotMarketIDsToCancelAll,
+        DerivativeMarketIdsToCancelAll: derivativeMarketIDsToCancelAll,
+        SpotOrdersToCreate:             spotOrdersToCreate,
+        DerivativeOrdersToCreate:       derivativeOrdersToCreate,
+    }
+
+    return msg
 }

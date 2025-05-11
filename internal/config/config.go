@@ -27,6 +27,7 @@ type InjectiveConfig struct {
 	MarketID    string `mapstructure:"market_id"`
 	PrivateKey  string `mapstructure:"private_key"`
 	ChainConfig string `mapstructure:"chain_config"` // Placeholder for chain-specific settings
+	SubaccountID string `mapstructure:"subaccount_id"`
 }
 
 // OrderConfig holds default order parameters.

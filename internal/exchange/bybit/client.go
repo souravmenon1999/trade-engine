@@ -1,27 +1,37 @@
-// internal/exchange/bybit/client.go
+// internal/exchange/bybit/client.go - Using github.com/gorilla/websocket (Corrected Parsing and Dummy Trading Methods + Fixes)
 package bybit
 
 import (
 	"context"
-	"encoding/json" 
+	"encoding/json"
 	"fmt"
-	"math" 
+	"math"
 	"math/rand"
-	"strconv" 
+	"strconv"
+	"strings" // Import the strings package
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/souravmenon1999/trade-engine/internal/config" 
+	"github.com/souravmenon1999/trade-engine/internal/config"
 	"github.com/souravmenon1999/trade-engine/internal/logging"
 	"github.com/souravmenon1999/trade-engine/internal/types"
-
-	// REMOVE THIS LINE: "nhooyr.io/websocket" // Ensure this is imported
-	"log/slog" // Ensure slog is imported
+	"github.com/souravmenon1999/trade-engine/internal/exchange" // Import the exchange package for the interface check
+	"log/slog"
 )
 
+// Remove the duplicate constant definitions here.
+// They are defined in ws.go and used via the WSConnection methods.
+// const (
+// 	writeWait = 10 * time.Second
+// 	pongWait = 60 * time.Second
+// 	pingPeriod = (pongWait * 9) / 10
+// 	maxMessageSize = 8192
+// )
+
 // Note: The WSConnection struct and its methods (Connect, Send, Messages, Close)
-// are defined in ws.go. This client.go file uses that abstraction.
+// are assumed to be defined and working correctly in ws.go using gorilla/websocket.
+// This client.go file uses that abstraction.
 
 
 // Client implements the ExchangeClient interface for Bybit.
@@ -54,33 +64,30 @@ type Client struct {
 func NewClient(ctx context.Context, cfg *config.BybitConfig) *Client {
 	// Assuming symbol format like "ETHUSDT" for basic currency extraction
     // In a real application, you'd likely fetch instrument details via REST API or configure them fully.
+    // This parsing is basic and might need refinement for other symbols/exchanges.
 	baseCurrency := ""
 	quoteCurrency := ""
-	if len(cfg.Symbol) > 4 { // Simple check assuming QuoteCurrency is 3-4 chars
-		quoteCurrency = cfg.Symbol[len(cfg.Symbol)-4:]
-		if types.Currency(quoteCurrency) == types.CurrencyUSDT || types.Currency(quoteCurrency) == types.Currency("USDC") { // Add other common quote currencies
-			baseCurrency = cfg.Symbol[:len(cfg.Symbol)-4]
-		} else if len(cfg.Symbol) > 3 { // Try 3 chars
-            quoteCurrency = cfg.Symbol[len(cfg.Symbol)-3:]
-             if types.Currency(quoteCurrency) == types.Currency("BTC") { // Example
-                baseCurrency = cfg.Symbol[:len(cfg.Symbol)-3]
-            } else {
-                 // Fallback or error if format is unexpected
-                 logging.GetLogger().Warn("Could not guess base/quote currency from symbol, using full symbol", "symbol", cfg.Symbol)
-                 baseCurrency = cfg.Symbol // Use full symbol as base, quote empty
-                 quoteCurrency = ""
-            }
-        } else {
-             logging.GetLogger().Warn("Could not guess base/quote currency from symbol, using full symbol", "symbol", cfg.Symbol)
-             baseCurrency = cfg.Symbol // Use full symbol as base, quote empty
-             quoteCurrency = ""
-        }
-
-	} else {
-        logging.GetLogger().Warn("Symbol too short to guess base/quote currency, using full symbol", "symbol", cfg.Symbol)
-        baseCurrency = cfg.Symbol // Use full symbol as base, quote empty
+	symbol := cfg.Symbol
+	// Attempt to find common quote currencies at the end of the symbol
+	// This is a weak heuristic; use exchange info endpoints for accuracy
+	if strings.HasSuffix(symbol, "USDT") {
+		baseCurrency = strings.TrimSuffix(symbol, "USDT")
+		quoteCurrency = "USDT"
+	} else if strings.HasSuffix(symbol, "USDC") {
+		baseCurrency = strings.TrimSuffix(symbol, "USDC")
+		quoteCurrency = "USDC"
+	} else if strings.HasSuffix(symbol, "BTC") { // Example for BTC quoted pairs
+        baseCurrency = strings.TrimSuffix(symbol, "BTC")
+        quoteCurrency = "BTC"
+    } else if strings.HasSuffix(symbol, "ETH") { // Example for ETH quoted pairs
+        baseCurrency = strings.TrimSuffix(symbol, "ETH")
+        quoteCurrency = "ETH"
+    } else {
+        logging.GetLogger().Warn("Could not guess base/quote currency from symbol, using full symbol as base", "symbol", symbol)
+        baseCurrency = symbol // Fallback
         quoteCurrency = ""
     }
+
 
 	instrument := &types.Instrument{
 		Symbol: cfg.Symbol,
@@ -129,6 +136,7 @@ func (c *Client) GetOrderbook() *types.Orderbook {
 func (c *Client) SubscribeOrderbook(ctx context.Context, symbol string) error {
 	// Ensure we only attempt one connection at a time
 	c.reconnectMu.Lock()
+	// Check if already connected using the atomic flag
 	if c.isConnected.Load() {
 		c.reconnectMu.Unlock()
 		c.logger.Info("Already connected, skipping subscription attempt")
@@ -139,8 +147,8 @@ func (c *Client) SubscribeOrderbook(ctx context.Context, symbol string) error {
 
 	c.logger.Info("Attempting to subscribe to orderbook", "symbol", symbol, "url", c.cfg.WSURL)
 
-	// Use the client's internal context for WS connection
 	// Create a NEW WSConnection instance on each connect attempt
+	// Pass the client's context for cancellation
 	wsConn := NewWSConnection(c.ctx, c.cfg.WSURL)
 	c.wsConn = wsConn // Store the connection manager
 
@@ -148,9 +156,17 @@ func (c *Client) SubscribeOrderbook(ctx context.Context, symbol string) error {
 		c.logger.Error("Failed initial WebSocket connection", "error", err)
 		c.isConnected.Store(false) // Mark as disconnected on failure
         // Wait a moment before triggering reconnect to avoid tight loop on instant failure
+        // Use a goroutine so SubscribeOrderbook doesn't block
         go func() {
-            time.Sleep(time.Second) // Wait 1 second
-            c.triggerReconnect() // Attempt reconnect on initial failure
+            // Use the client's context to ensure this goroutine respects shutdown signals
+            select {
+            case <-c.ctx.Done():
+                c.logger.Debug("Initial connection failed, reconnect goroutine stopping due to context cancellation.")
+                return // Client is shutting down
+            case <-time.After(time.Second): // Wait 1 second
+                c.logger.Debug("Initial connection failed, attempting reconnect after delay...")
+                c.triggerReconnect() // Attempt reconnect on initial failure
+            }
         }()
 		return err
 	}
@@ -164,13 +180,16 @@ func (c *Client) SubscribeOrderbook(ctx context.Context, symbol string) error {
 		Args: []string{TopicOrderbook + symbol},
 		ReqID: fmt.Sprintf("sub-ob-%s-%d", symbol, time.Now().UnixNano()), // Unique request ID
 	}
+	// Use the connection's Send method
 	if err := wsConn.Send(subMsg); err != nil {
 		c.logger.Error("Failed to send subscription message", "error", err)
 		// Sending subscription failed - connection might still be open but useless for this topic
 		// Mark as disconnected and trigger reconnect.
 		c.isConnected.Store(false) // Mark as disconnected if send fails
 		c.triggerReconnect()
-		return err // Consider if connection should be closed immediately
+		// Consider closing the WS connection managed by wsConn here if the subscription is critical
+		// wsConn.Close() // This will trigger the read loop to exit
+		return err
 	}
 
 	c.logger.Info("Subscription message sent", "symbol", symbol)
@@ -186,11 +205,17 @@ func (c *Client) SubscribeOrderbook(ctx context.Context, symbol string) error {
 // processMessages reads from the WebSocket message channel and handles messages.
 func (c *Client) processMessages(msgChan <-chan WSMessage) {
 	c.logger.Info("Starting message processing loop")
-	defer c.logger.Info("Message processing loop stopped")
+	defer func() {
+		c.logger.Info("Message processing loop stopped")
+		// When read loop stops due to error or context cancellation,
+		// the connection is likely broken. Signal this via channel closure.
+		// Ensure the channel is only closed once if needed.
+		// Context cancellation is the primary shutdown mechanism.
+	}()
 
-	// Signal that we are waiting for a snapshot
+	// Reset snapshot state and expected sequence when starting processing
 	c.isSnapshot.Store(true)
-    c.expectedSeq.Store(0) // Reset expected sequence when waiting for snapshot
+    c.expectedSeq.Store(0)
 
 	for {
 		select {
@@ -219,8 +244,9 @@ func (c *Client) processMessages(msgChan <-chan WSMessage) {
 				} else {
 					c.logger.Error("Subscription failed", "topic", msg.Topic, "code", msg.Error, "msg", msg.ErrorMsg)
 					// Handle failed subscription - maybe critical error or retry?
-					// For now, just log. Depending on error code, might trigger reconnect.
-					if msg.Error == 10001 || msg.Error == 10005 { // Example error codes for invalid topic/auth
+					// Depending on error code, might trigger reconnect or shutdown.
+					// Example critical codes: 10001 (invalid topic), 10005 (not authenticated)
+					if msg.Error != 0 && (msg.Error == 10001 || msg.Error == 10005) {
                          c.logger.Error("Critical subscription error, triggering reconnect", "code", msg.Error)
                          c.isConnected.Store(false)
                          c.triggerReconnect()
@@ -233,8 +259,7 @@ func (c *Client) processMessages(msgChan <-chan WSMessage) {
 			case "": // Empty type might indicate a response or error
 				if msg.Error != 0 {
 					c.logger.Error("Received error message from WS", "code", msg.Error, "msg", msg.ErrorMsg)
-					// Decide how to handle specific errors
-					// Example: if it's a critical error, close and maybe don't reconnect immediately
+					// Decide how to handle specific errors from the exchange
 				} else if msg.RequestID != "" {
                     c.logger.Debug("Received WS response", "success", msg.Success, "req_id", msg.RequestID)
                 } else {
@@ -253,22 +278,33 @@ func (c *Client) handleSnapshot(msg WSMessage) {
 	var data OrderbookData
 	if err := json.Unmarshal(msg.Data, &data); err != nil {
 		c.logger.Error("Failed to unmarshal snapshot data", "error", err)
+		// Consider triggering reconnect on unmarshalling errors if they are frequent
 		return
 	}
 
-	c.logger.Info("Received orderbook snapshot", "symbol", data.Symbol, "seq", data.Seq)
+	// Bybit V5 uses 'u' (Update ID) for sequence number
+	receivedSeq := uint64(data.UpdateID)
+
+	c.logger.Info("Received orderbook snapshot", "symbol", data.Symbol, "seq", receivedSeq)
 
 	// --- ADD LOGGING FOR RAW PRICES HERE ---
+	// Extracting and logging raw strings for verification during debugging
 	rawBestBidPrice := "N/A"
 	if len(data.Bids) > 0 && len(data.Bids[0]) > 0 {
 		// Unmarshal the json.RawMessage price string into a Go string
-		_ = json.Unmarshal(data.Bids[0][0], &rawBestBidPrice) // Ignore unmarshal error for logging simplicity
+		if err := json.Unmarshal(data.Bids[0][0], &rawBestBidPrice); err != nil {
+            c.logger.Debug("Failed to unmarshal raw bid price string for logging", "error", err)
+            rawBestBidPrice = "Error" // Indicate error
+        }
 	}
 
 	rawBestAskPrice := "N/A"
 	if len(data.Asks) > 0 && len(data.Asks[0]) > 0 {
 		// Unmarshal the json.RawMessage price string into a Go string
-		_ = json.Unmarshal(data.Asks[0][0], &rawBestAskPrice) // Ignore unmarshal error for logging simplicity
+		if err := json.Unmarshal(data.Asks[0][0], &rawBestAskPrice); err != nil {
+            c.logger.Debug("Failed to unmarshal raw ask price string for logging", "error", err)
+            rawBestAskPrice = "Error" // Indicate error
+        }
 	}
 
     // Use slog's structured logging for readability
@@ -276,8 +312,10 @@ func (c *Client) handleSnapshot(msg WSMessage) {
 		"bid_price", rawBestBidPrice,
 		"ask_price", rawBestAskPrice,
 		"symbol", data.Symbol, // Add symbol for context
+		"seq", receivedSeq,
 	)
     // --- END LOGGING ---
+
 
 	// Clear the existing orderbook and rebuild from the snapshot
 	c.orderbook.Bids = &sync.Map{}
@@ -289,21 +327,21 @@ func (c *Client) handleSnapshot(msg WSMessage) {
 
 
 	// Update sequence number and timestamp
-	// Bybit uses 'u' (Update ID) for sequence in V5. Use data.UpdateID.
-	c.orderbook.UpdateSequenceNumber(uint64(data.UpdateID))
+	c.orderbook.UpdateSequenceNumber(receivedSeq)
 	c.orderbook.UpdateTimestamp()
 
 	// Snapshot received and processed, now ready for deltas
-	c.expectedSeq.Store(uint64(data.UpdateID) + 1) // Expect the next update ID
+	c.expectedSeq.Store(receivedSeq + 1) // Expect the next update ID
 	c.isSnapshot.Store(false) // No longer waiting for snapshot
 
-	c.logger.Info("Orderbook snapshot processed successfully", "symbol", data.Symbol, "seq", data.UpdateID, "bid_count", c.countSyncMap(c.orderbook.Bids), "ask_count", c.countSyncMap(c.orderbook.Asks))
+	c.logger.Info("Orderbook snapshot processed successfully", "symbol", data.Symbol, "seq", receivedSeq, "bid_count", c.countSyncMap(c.orderbook.Bids), "ask_count", c.countSyncMap(c.orderbook.Asks))
 
 	// Signal that the orderbook is updated (non-blocking send)
 	select {
 	case c.obUpdateSignalChan <- struct{}{}:
 		c.logger.Debug("Orderbook update signal sent after snapshot")
 	default:
+		// This is expected if the strategy is not keeping up or the channel is small
 		c.logger.Debug("Orderbook update signal channel full after snapshot, skipping send")
 	}
 }
@@ -313,17 +351,23 @@ func (c *Client) handleDelta(msg WSMessage) {
 	var data OrderbookData
 	if err := json.Unmarshal(msg.Data, &data); err != nil {
 		c.logger.Error("Failed to unmarshal delta data", "error", err)
+		// Consider triggering reconnect on unmarshalling errors
 		return
 	}
 
-	// If we are still waiting for a snapshot, ignore deltas
+	// Bybit V5 uses 'u' (Update ID) for sequence number
+	receivedSeq := uint64(data.UpdateID)
+
+	// If we are still waiting for a snapshot, ignore deltas unless it's the specific snapshot we need
+	// The Bybit V5 docs suggest deltas might arrive before the snapshot, they should be queued.
+	// However, our current simple logic just waits for the snapshot.
+	// A more advanced client would queue deltas received before the expected snapshot.
 	if c.isSnapshot.Load() {
-		c.logger.Debug("Ignoring delta, waiting for snapshot", "seq", data.UpdateID)
+		c.logger.Debug("Ignoring delta, still waiting for snapshot", "received_seq", receivedSeq)
 		return
 	}
 
 	expected := c.expectedSeq.Load()            // Get the sequence number we currently expect
-	receivedSeq := uint64(data.UpdateID)        // Use data.UpdateID for sequence in V5
 
 	// Sequence validation
 	if receivedSeq < expected {
@@ -356,52 +400,63 @@ func (c *Client) handleDelta(msg WSMessage) {
 	case c.obUpdateSignalChan <- struct{}{}:
 		c.logger.Debug("Orderbook update signal sent after delta")
 	default:
+		// This is expected if the strategy is not keeping up or the channel is small
 		c.logger.Debug("Orderbook update signal channel full after delta, skipping send")
 	}
 }
 
+// populateOrderbookLevels parses and adds/updates levels from a list of [price, quantity] string arrays.
+// Used for snapshots. Handles Bybit's string prices/quantities.
 func (c *Client) populateOrderbookLevels(levelsMap *sync.Map, entries [][]json.RawMessage, side types.Side) {
 	for _, entry := range entries {
 		if len(entry) != 2 {
-			c.logger.Warn("Unexpected level entry format", "entry", string(entry[0])) // Log raw bytes for debug
+			c.logger.Warn("Unexpected level entry format in snapshot", "entry", string(entry[0])) // Log raw bytes for debug
 			continue
 		}
 
-		// --- Corrected Parsing Logic ---
+		// --- Corrected Parsing Logic: Unmarshal JSON string then parse float ---
 		var priceStr, quantityStr string
 
-		// Unmarshal RawMessage into string to handle escaped quotes
+		// Unmarshal RawMessage into string to handle escaped quotes from Bybit
 		if err := json.Unmarshal(entry[0], &priceStr); err != nil {
-			c.logger.Error("Failed to unmarshal price json.RawMessage into string", "error", err, "raw_bytes", string(entry[0]))
+			c.logger.Error("Failed to unmarshal price json.RawMessage into string in snapshot", "error", err, "raw_bytes", string(entry[0]))
 			continue
 		}
 		if err := json.Unmarshal(entry[1], &quantityStr); err != nil {
-			c.logger.Error("Failed to unmarshal quantity json.RawMessage into string", "error", err, "raw_bytes", string(entry[1]))
+			c.logger.Error("Failed to unmarshal quantity json.RawMessage into string in snapshot", "error", err, "raw_bytes", string(entry[1]))
 			continue
 		}
 
-		c.logger.Debug("Raw Price Level Received",
-		"side", side,
-		"price_str", priceStr,
-		"quantity_str", quantityStr,
-		"type", "snapshot", // Indicate it's from a snapshot
-	)
+		c.logger.Debug("Raw Price Level Received (Snapshot)",
+            "side", side,
+            "price_str", priceStr,
+            "quantity_str", quantityStr,
+        )
 
 		// Parse the string as float64
 		priceFloat, err := strconv.ParseFloat(priceStr, 64)
 		if err != nil {
-			c.logger.Error("Failed to parse price string as float", "error", err, "price_str", priceStr)
+			c.logger.Error("Failed to parse price string as float in snapshot", "error", err, "price_str", priceStr)
 			continue
 		}
 		quantityFloat, err := strconv.ParseFloat(quantityStr, 64)
 		if err != nil {
-			c.logger.Error("Failed to parse quantity string as float", "error", err, "quantity_str", quantityStr)
+			c.logger.Error("Failed to parse quantity string as float in snapshot", "error", err, "quantity_str", quantityStr)
 			continue
 		}
 
-		// Scale the floats to uint64
-		scaledPrice := uint64(priceFloat * 1e6)
-		scaledQuantity := uint64(quantityFloat * 1e6)
+		// Scale the floats to uint64 (adjust scaling factor 1e6 if needed per exchange/market)
+		// Use math.Round for more accurate scaling if values have fractional parts
+		scaledPrice := uint64(math.Round(priceFloat * 1e6))
+		scaledQuantity := uint64(math.Round(quantityFloat * 1e6))
+
+        if scaledPrice == 0 && priceFloat > 0 {
+            c.logger.Warn("Snapshot price scaled to zero, potential precision issue", "price_float", priceFloat, "scaled_price", scaledPrice)
+        }
+         if scaledQuantity == 0 && quantityFloat > 0 {
+            c.logger.Warn("Snapshot quantity scaled to zero, potential precision issue", "quantity_float", quantityFloat, "scaled_quantity", scaledQuantity)
+        }
+
 
 		// Add or update the level in the map
 		level, ok := levelsMap.Load(scaledPrice) // Use scaled price as the key
@@ -409,19 +464,17 @@ func (c *Client) populateOrderbookLevels(levelsMap *sync.Map, entries [][]json.R
 			// New price level
 			level = &types.PriceLevel{Price: scaledPrice}
 			levelsMap.Store(scaledPrice, level)
-			// Log only info/debug for new levels in snapshot, warning for unexpected in delta if separate func
-			c.logger.Debug("Added price level", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
+			c.logger.Debug("Added price level from snapshot", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
 		}
 		// Update quantity using atomic store
 		level.(*types.PriceLevel).Quantity.Store(scaledQuantity)
-		c.logger.Debug("Updated price level quantity", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
-
-		// Note: This helper doesn't handle quantity == 0 for removal.
-		// A dedicated update function is better for deltas.
+		// Log level updates less verbosely for snapshot population if needed
 	}
 }
 
-// updateLevels applies delta updates to a bid or ask map.
+
+// updateOrderbookLevels applies delta updates from a list of [price, quantity] string arrays.
+// Used for deltas. Handles quantity == 0 for removal. Handles Bybit's string prices/quantities.
 func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.RawMessage, side types.Side) {
 	for _, entry := range updates {
 		if len(entry) != 2 {
@@ -429,10 +482,10 @@ func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.Raw
 			continue
 		}
 
-		// --- Corrected Parsing Logic ---
+		// --- Corrected Parsing Logic: Unmarshal JSON string then parse float ---
 		var priceStr, quantityStr string
 
-		// Unmarshal RawMessage into string to handle escaped quotes
+		// Unmarshal RawMessage into string to handle escaped quotes from Bybit
 		if err := json.Unmarshal(entry[0], &priceStr); err != nil {
 			c.logger.Error("Failed to unmarshal price json.RawMessage into string in delta", "error", err, "raw_bytes", string(entry[0]))
 			continue
@@ -441,6 +494,13 @@ func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.Raw
 			c.logger.Error("Failed to unmarshal quantity json.RawMessage into string in delta", "error", err, "raw_bytes", string(entry[1]))
 			continue
 		}
+
+		c.logger.Debug("Raw Price Level Received (Delta)",
+            "side", side,
+            "price_str", priceStr,
+            "quantity_str", quantityStr,
+        )
+
 
 		// Parse the string as float64
 		priceFloat, err := strconv.ParseFloat(priceStr, 64)
@@ -454,17 +514,24 @@ func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.Raw
 			continue
 		}
 
-		// Scale the floats to uint64
-		scaledPrice := uint64(priceFloat * 1e6)
-		scaledQuantity := uint64(quantityFloat * 1e6)
+		// Scale the floats to uint64 (adjust scaling factor 1e6 if needed per exchange/market)
+		scaledPrice := uint64(math.Round(priceFloat * 1e6))
+		scaledQuantity := uint64(math.Round(quantityFloat * 1e6))
+
+         if scaledPrice == 0 && priceFloat > 0 {
+            c.logger.Warn("Delta price scaled to zero, potential precision issue", "price_float", priceFloat, "scaled_price", scaledPrice)
+        }
+         if scaledQuantity == 0 && quantityFloat > 0 {
+            c.logger.Warn("Delta quantity scaled to zero, potential precision issue", "quantity_float", quantityFloat, "scaled_quantity", scaledQuantity)
+        }
 
 
 		if scaledQuantity == 0 {
 			// Quantity 0 means remove the level
 			if _, loaded := levelsMap.LoadAndDelete(scaledPrice); loaded {
-				c.logger.Debug("Removed price level", "side", side, "price", priceFloat, "scaled_price", scaledPrice)
+				c.logger.Debug("Removed price level from delta", "side", side, "price", priceFloat, "scaled_price", scaledPrice)
 			} else {
-                 c.logger.Debug("Attempted to remove non-existent price level", "side", side, "price", priceFloat, "scaled_price", scaledPrice)
+                 c.logger.Debug("Attempted to remove non-existent price level from delta", "side", side, "price", priceFloat, "scaled_price", scaledPrice)
             }
 
 		} else {
@@ -483,11 +550,28 @@ func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.Raw
 	}
 }
 
-// SubmitOrder is not implemented for the Bybit data client.
+
+// --- Dummy Trading Methods to satisfy ExchangeClient interface ---
+
+// SubmitOrder is not implemented for the Bybit data client in this strategy.
 func (c *Client) SubmitOrder(ctx context.Context, order types.Order) (string, error) {
-	c.logger.Warn("SubmitOrder is not implemented for the Bybit data client.")
+	c.logger.Warn("SubmitOrder is not implemented for the Bybit data client in this strategy.")
 	return "", fmt.Errorf("SubmitOrder not supported by Bybit data client")
 }
+
+// CancelAllOrders is not implemented for the Bybit data client in this strategy.
+func (c *Client) CancelAllOrders(ctx context.Context, instrument *types.Instrument) error {
+	c.logger.Warn("CancelAllOrders is not implemented for the Bybit data client in this strategy.")
+	return fmt.Errorf("CancelAllOrders not supported by Bybit data client")
+}
+
+// ReplaceQuotes is not implemented for the Bybit data client in this strategy.
+func (c *Client) ReplaceQuotes(ctx context.Context, instrument *types.Instrument, ordersToPlace []*types.Order) ([]string, error) {
+	c.logger.Warn("ReplaceQuotes is not implemented for the Bybit data client in this strategy.")
+	return nil, fmt.Errorf("ReplaceQuotes not supported by Bybit data client")
+}
+
+// --- End Dummy Trading Methods ---
 
 
 // Close cleans up the Bybit client resources.
@@ -496,11 +580,14 @@ func (c *Client) Close() error {
 	c.logger.Info("Bybit client shutting down")
 
     // Close the message channel first to signal processor loop to stop
+    // Note: Closing a channel can cause panics if receivers are not ready or nil.
+    // Use context cancellation as the primary signal.
     // close(c.obUpdateSignalChan) // Optional: close the signal channel
+
 
 	// Close the WebSocket connection manager
 	if c.wsConn != nil {
-		return c.wsConn.Close()
+		return c.wsConn.Close() // wsConn.Close() handles cancelling its own context and closing the gorilla conn
 	}
 	return nil
 }
@@ -510,6 +597,9 @@ func (c *Client) triggerReconnect() {
 	c.reconnectMu.Lock()
 	defer c.reconnectMu.Unlock()
 
+	// Check if already connected or if a reconnect attempt is already scheduled/running
+	// A simple check for isConnected might not be enough if triggerReconnect is called
+	// multiple times concurrently. A flag for "reconnect_in_progress" could be added.
 	if c.isConnected.Load() {
 		return // Already reconnected
 	}
@@ -520,6 +610,8 @@ func (c *Client) triggerReconnect() {
 
     // Add jitter: a random duration up to 1 second
     // Use rand.Float64() for a float between 0.0 and 1.0, then scale it.
+    // Ensure the random number generator is seeded if necessary for non-deterministic jitter
+    // rand.Seed(time.Now().UnixNano()) // Seed typically once at the start of the program
 	jitter := time.Duration(rand.Float64() * float64(time.Second))
 	delay := baseDelay + jitter
 
@@ -542,16 +634,23 @@ func (c *Client) triggerReconnect() {
 			// Wait for the calculated delay
 		}
 
+		// Re-check if already connected before attempting to dial, in case a previous
+		// concurrent reconnect attempt succeeded while waiting for the delay.
+		if c.isConnected.Load() {
+			c.logger.Debug("Reconnect goroutine found connection already established.")
+			return // Another goroutine reconnected
+		}
 
 		c.logger.Info("Attempting to reconnect now...")
-		// Call SubscribeOrderbook again. It has logic to handle if already connected.
+		// Call SubscribeOrderbook again. It has logic to handle if already connected
+		// or if the connection attempt fails (which will trigger triggerReconnect again).
 		err := c.SubscribeOrderbook(c.ctx, c.cfg.Symbol)
 		if err != nil {
 			c.logger.Error("Reconnect attempt failed", "error", err)
-			// The logic inside SubscribeOrderbook will trigger triggerReconnect again on failure
+			// SubscribeOrderbook failing will likely trigger triggerReconnect again internally.
 		} else {
 			c.logger.Info("Reconnect successful!")
-			// Reset reconnect attempt counter happens inside SubscribeOrderbook on success
+			// Reset reconnect attempt counter happens inside SubscribeOrderbook on successful connection
 		}
 	}()
 }
@@ -567,4 +666,5 @@ func (c *Client) countSyncMap(m *sync.Map) int {
 }
 
 // Add this line at the end of the file to ensure it implements the interface
-var _ExchangeClient = (*Client)(nil)
+// This line must be outside any function or method.
+var _ exchange.ExchangeClient = (*Client)(nil) // Use exchange.ExchangeClient
