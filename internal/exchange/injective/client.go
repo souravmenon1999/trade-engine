@@ -1,28 +1,33 @@
 package injective
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"time"
 
 	"github.com/souravmenon1999/trade-engine/internal/config"
 	"github.com/souravmenon1999/trade-engine/internal/logging"
-	"github.com/souravmenon1999/trade-engine/internal/types"
+	projecttypes "github.com/souravmenon1999/trade-engine/internal/types"
 	"log/slog"
+	"math/big"
+
 	"github.com/shopspring/decimal"
 	"github.com/google/uuid"
 	"github.com/InjectiveLabs/sdk-go/client/common"
+	chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
 	exchangetypes "github.com/InjectiveLabs/sdk-go/chain/exchange/types"
-	"github.com/cosmos/gogoproto/proto"
-	"github.com/cosmos/gogoproto/types"
 	"cosmossdk.io/math"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/btcsuite/btcutil/bech32"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/client"
+	"github.com/cosmos/cosmos-sdk/crypto/keyring"
+	"github.com/cosmos/cosmos-sdk/crypto/hd"
+	"github.com/cosmos/cosmos-sdk/codec"
+	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
+	"google.golang.org/grpc"
 )
 
 // Client implements the ExchangeClient interface for Injective.
@@ -34,12 +39,12 @@ type Client struct {
 	subaccountID   string
 	ctx            context.Context
 	cancel         context.CancelFunc
-	orderbook      *types.Orderbook
+	orderbook      *projecttypes.Orderbook
 	privKey        *ecdsa.PrivateKey
 	chainID        string
 }
 
-// NewClient creates a new Injective client without Cosmos SDK dependencies.
+// NewClient creates a new Injective client.
 func NewClient(ctx context.Context, cfg *config.InjectiveConfig) (*Client, error) {
 	clientCtx, cancel := context.WithCancel(ctx)
 
@@ -60,8 +65,8 @@ func NewClient(ctx context.Context, cfg *config.InjectiveConfig) (*Client, error
 	privKey, err := crypto.HexToECDSA(cfg.PrivateKey)
 	if err != nil {
 		client.logger.Error("Failed to parse private key", "error", err)
-		return nil, types.TradingError{
-			Code:    types.ErrConnectionFailed,
+		return nil, projecttypes.TradingError{
+			Code:    projecttypes.ErrConnectionFailed,
 			Message: "Failed to parse private key",
 			Wrapped: err,
 		}
@@ -74,8 +79,8 @@ func NewClient(ctx context.Context, cfg *config.InjectiveConfig) (*Client, error
 	converted, err := bech32.ConvertBits(addrBytes, 8, 5, true)
 	if err != nil {
 		client.logger.Error("Failed to convert address bytes for Bech32", "error", err)
-		return nil, types.TradingError{
-			Code:    types.ErrConnectionFailed,
+		return nil, projecttypes.TradingError{
+			Code:    projecttypes.ErrConnectionFailed,
 			Message: "Failed to convert address for Bech32 encoding",
 			Wrapped: err,
 		}
@@ -83,8 +88,8 @@ func NewClient(ctx context.Context, cfg *config.InjectiveConfig) (*Client, error
 	accAddress, err := bech32.Encode("inj", converted)
 	if err != nil {
 		client.logger.Error("Failed to encode Bech32 address", "error", err)
-		return nil, types.TradingError{
-			Code:    types.ErrConnectionFailed,
+		return nil, projecttypes.TradingError{
+			Code:    projecttypes.ErrConnectionFailed,
 			Message: "Failed to encode Bech32 address",
 			Wrapped: err,
 		}
@@ -106,12 +111,12 @@ func deriveSubaccountID(addr string) string {
 }
 
 // GetExchangeType returns the type of this exchange client.
-func (c *Client) GetExchangeType() types.ExchangeType {
-	return types.ExchangeInjective
+func (c *Client) GetExchangeType() projecttypes.ExchangeType {
+	return projecttypes.ExchangeInjective
 }
 
 // GetOrderbook returns nil for the Injective client in this setup.
-func (c *Client) GetOrderbook() *types.Orderbook {
+func (c *Client) GetOrderbook() *projecttypes.Orderbook {
 	return c.orderbook
 }
 
@@ -121,13 +126,13 @@ func (c *Client) SubscribeOrderbook(ctx context.Context, symbol string) error {
 	return nil
 }
 
-// translateOrderDataToSpotLimitOrderData converts a types.Order to an Injective SpotOrder.
+// translateOrderDataToSpotLimitOrderData converts a projecttypes.Order to an Injective SpotOrder.
 func (c *Client) translateOrderDataToSpotLimitOrderData(
-	order types.Order,
+	order projecttypes.Order,
 	senderAddress string,
 	marketID string,
 ) (*exchangetypes.SpotOrder, error) {
-	if order.Exchange != types.ExchangeInjective {
+	if order.Exchange != projecttypes.ExchangeInjective {
 		return nil, fmt.Errorf("order is not for Injective")
 	}
 	if order.Instrument == nil {
@@ -151,9 +156,9 @@ func (c *Client) translateOrderDataToSpotLimitOrderData(
 	// Determine Injective OrderType
 	injOrderType := exchangetypes.OrderType_BUY
 	switch order.Side {
-	case types.Buy:
+	case projecttypes.Buy:
 		injOrderType = exchangetypes.OrderType_BUY
-	case types.Sell:
+	case projecttypes.Sell:
 		injOrderType = exchangetypes.OrderType_SELL
 	default:
 		return nil, fmt.Errorf("unsupported order side for Injective: %s", order.Side)
@@ -174,18 +179,18 @@ func (c *Client) translateOrderDataToSpotLimitOrderData(
 	}, nil
 }
 
-// SubmitOrder sends a single order to the Injective chain via REST.
-func (c *Client) SubmitOrder(ctx context.Context, order types.Order) (string, error) {
-	if order.Exchange != types.ExchangeInjective {
-		return "", types.TradingError{
-			Code:    types.ErrOrderSubmissionFailed,
+// SubmitOrder sends a single order to the Injective chain.
+func (c *Client) SubmitOrder(ctx context.Context, order projecttypes.Order) (string, error) {
+	if order.Exchange != projecttypes.ExchangeInjective {
+		return "", projecttypes.TradingError{
+			Code:    projecttypes.ErrOrderSubmissionFailed,
 			Message: "Order is not intended for Injective",
 			Wrapped: fmt.Errorf("order target exchange: %s", order.Exchange),
 		}
 	}
 
 	marketID := c.cfg.MarketID
-	c.logger.Info("Submitting single order to Injective via REST...", "order", order, "market_id", marketID)
+	c.logger.Info("Submitting single order to Injective...", "order", order, "market_id", marketID)
 
 	spotOrder, err := c.translateOrderDataToSpotLimitOrderData(
 		order,
@@ -194,8 +199,8 @@ func (c *Client) SubmitOrder(ctx context.Context, order types.Order) (string, er
 	)
 	if err != nil {
 		c.logger.Error("Failed to translate single order data", "error", err)
-		return "", types.TradingError{
-			Code:    types.ErrOrderSubmissionFailed,
+		return "", projecttypes.TradingError{
+			Code:    projecttypes.ErrOrderSubmissionFailed,
 			Message: "Failed to translate order data",
 			Wrapped: err,
 		}
@@ -213,8 +218,8 @@ func (c *Client) SubmitOrder(ctx context.Context, order types.Order) (string, er
 	txHash, err := c.broadcastTxViaREST(ctx, msg)
 	if err != nil {
 		c.logger.Error("Failed to broadcast single order", "error", err, "order", order, "market_id", marketID)
-		return "", types.TradingError{
-			Code:    types.ErrOrderSubmissionFailed,
+		return "", projecttypes.TradingError{
+			Code:    projecttypes.ErrOrderSubmissionFailed,
 			Message: "Failed to broadcast transaction for single order",
 			Wrapped: err,
 		}
@@ -224,13 +229,13 @@ func (c *Client) SubmitOrder(ctx context.Context, order types.Order) (string, er
 	return spotOrder.OrderInfo.Cid, nil
 }
 
-// CancelAllOrders cancels all open orders for the configured market and subaccount via REST.
-func (c *Client) CancelAllOrders(ctx context.Context, instrument *types.Instrument) error {
+// CancelAllOrders cancels all open orders for the configured market and subaccount.
+func (c *Client) CancelAllOrders(ctx context.Context, instrument *projecttypes.Instrument) error {
 	if instrument == nil {
 		return fmt.Errorf("instrument is nil")
 	}
 	marketID := c.cfg.MarketID
-	c.logger.Info("Attempting to cancel all orders for market via REST...", "market_id", marketID, "subaccount_id", c.subaccountID)
+	c.logger.Info("Attempting to cancel all orders for market...", "market_id", marketID, "subaccount_id", c.subaccountID)
 
 	msg := createBatchUpdateMessage(
 		c.accountAddress,
@@ -244,8 +249,8 @@ func (c *Client) CancelAllOrders(ctx context.Context, instrument *types.Instrume
 	txHash, err := c.broadcastTxViaREST(ctx, msg)
 	if err != nil {
 		c.logger.Error("Failed to broadcast cancel all orders", "error", err, "market_id", marketID)
-		return types.TradingError{
-			Code:    types.ErrOrderSubmissionFailed,
+		return projecttypes.TradingError{
+			Code:    projecttypes.ErrOrderSubmissionFailed,
 			Message: "Failed to broadcast transaction for cancelling all orders",
 			Wrapped: err,
 		}
@@ -255,8 +260,8 @@ func (c *Client) CancelAllOrders(ctx context.Context, instrument *types.Instrume
 	return nil
 }
 
-// ReplaceQuotes atomically cancels existing quotes and places new orders via REST.
-func (c *Client) ReplaceQuotes(ctx context.Context, instrument *types.Instrument, ordersToPlace []*types.Order) ([]string, error) {
+// ReplaceQuotes atomically cancels existing quotes and places new orders.
+func (c *Client) ReplaceQuotes(ctx context.Context, instrument *projecttypes.Instrument, ordersToPlace []*projecttypes.Order) ([]string, error) {
 	if instrument == nil {
 		return nil, fmt.Errorf("instrument is nil")
 	}
@@ -266,7 +271,7 @@ func (c *Client) ReplaceQuotes(ctx context.Context, instrument *types.Instrument
 		c.logger.Info("ReplaceQuotes called with no orders to place. Will only cancel existing.", "market_id", marketID)
 	}
 
-	c.logger.Info("Attempting to replace quotes via REST...",
+	c.logger.Info("Attempting to replace quotes...",
 		"market_id", marketID, "subaccount_id", c.subaccountID, "orders_to_place_count", len(ordersToPlace))
 
 	spotOrdersToCreate := make([]*exchangetypes.SpotOrder, 0, len(ordersToPlace))
@@ -277,9 +282,9 @@ func (c *Client) ReplaceQuotes(ctx context.Context, instrument *types.Instrument
 			c.logger.Warn("Skipping nil order in ReplaceQuotes list")
 			continue
 		}
-		if order.Exchange != types.ExchangeInjective {
+		if order.Exchange != projecttypes.ExchangeInjective {
 			c.logger.Error("Skipping order not intended for Injective in ReplaceQuotes list", "order", order)
-		 continue
+			continue
 		}
 
 		spotOrder, err := c.translateOrderDataToSpotLimitOrderData(
@@ -297,8 +302,8 @@ func (c *Client) ReplaceQuotes(ctx context.Context, instrument *types.Instrument
 	}
 
 	if len(spotOrdersToCreate) == 0 && len(ordersToPlace) > 0 {
-		return nil, types.TradingError{
-			Code:    types.ErrOrderSubmissionFailed,
+		return nil, projecttypes.TradingError{
+			Code:    projecttypes.ErrOrderSubmissionFailed,
 			Message: "Failed to translate/create any valid orders for batch update",
 		}
 	}
@@ -315,8 +320,8 @@ func (c *Client) ReplaceQuotes(ctx context.Context, instrument *types.Instrument
 	txHash, err := c.broadcastTxViaREST(ctx, msg)
 	if err != nil {
 		c.logger.Error("Failed to broadcast batch update", "error", err, "market_id", marketID, "orders_count", len(spotOrdersToCreate))
-		return nil, types.TradingError{
-			Code:    types.ErrOrderSubmissionFailed,
+		return nil, projecttypes.TradingError{
+			Code:    projecttypes.ErrOrderSubmissionFailed,
 			Message: "Failed to broadcast transaction for batch order update",
 			Wrapped: err,
 		}
@@ -327,135 +332,72 @@ func (c *Client) ReplaceQuotes(ctx context.Context, instrument *types.Instrument
 	return newOrderCids, nil
 }
 
-// broadcastTxViaREST broadcasts a transaction via Injective's REST API.
-func (c *Client) broadcastTxViaREST(ctx context.Context, msg *exchangetypes.MsgBatchUpdateOrders) (string, error) {
-	// Hardcoded values for demo (query in production)
-	sequence := uint64(0)      // Replace with actual sequence
-	gasLimit := uint64(200000) // Hardcoded gas limit
-	feeAmount := []*types.Coin{
-		{
-			Denom:  "inj",
-			Amount: "500000000",
-		},
-	}
+// broadcastTxViaREST broadcasts a transaction via Injective's Chain Client.
+func (c *Client) broadcastTxViaREST(ctx context.Context, msg sdk.Msg) (string, error) {
+	c.logger.Info("Preparing to broadcast transaction via Injective Chain Client")
 
-	// Serialize message as Protobuf Any
-	msgBytes, err := proto.Marshal(msg)
+	// Load network
+	network := common.LoadNetwork(c.cfg.ChainConfig, "lb")
+
+	// Create codec for keyring
+	registry := codectypes.NewInterfaceRegistry()
+	exchangetypes.RegisterInterfaces(registry)
+	cdc := codec.NewProtoCodec(registry)
+
+	// Create keyring
+	kr, err := keyring.New(
+		"injective",
+		keyring.BackendMemory,
+		"",
+		nil,
+		cdc,
+	)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal message: %w", err)
-	}
-	anyMsg := &types.Any{
-		TypeUrl: "/injective.exchange.v1beta1.MsgBatchUpdateOrders",
-		Value:   msgBytes,
+		return "", fmt.Errorf("failed to create keyring: %w", err)
 	}
 
-	// Create transaction body
-	txBody := &types.TxBody{
-		Messages: []*types.Any{anyMsg},
-	}
-
-	// Create signer info
-	pubKeyBytes := crypto.FromECDSAPub(&c.privKey.PublicKey)
-	signerInfo := &types.SignerInfo{
-		PublicKey: &types.Any{
-			TypeUrl: "/cosmos.crypto.secp256k1.PubKey",
-			Value:   pubKeyBytes, // Simplified; requires proper serialization
-		},
-		ModeInfo: &types.ModeInfo{
-			Sum: &types.ModeInfo_Single_{
-				Single: &types.ModeInfo_Single{
-					Mode: types.SignMode_SIGN_MODE_DIRECT,
-				},
-			},
-		},
-		Sequence: sequence,
-	}
-
-	// Create fee
-	fee := &types.Fee{
-		Amount:   feeAmount,
-		GasLimit: gasLimit,
-	}
-
-	// Create auth info
-	authInfo := &types.AuthInfo{
-		SignerInfos: []*types.SignerInfo{signerInfo},
-		Fee:         fee,
-	}
-
-	// Serialize transaction components
-	txBodyBytes, err := proto.Marshal(txBody)
+	// Import private key into keyring
+	_, mnemonic, err := kr.NewMnemonic("default", keyring.English, "", "", hd.Secp256k1)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal tx body: %w", err)
+		return "", fmt.Errorf("failed to create keyring record: %w", err)
 	}
-	authInfoBytes, err := proto.Marshal(authInfo)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal auth info: %w", err)
-	}
+	_ = mnemonic // Ignore mnemonic if not needed
 
-	// Sign transaction (simplified; use Injective's sign bytes in production)
-	signBytes := append(txBodyBytes, authInfoBytes...) // Simplified
-	hash := crypto.Keccak256(signBytes)               // Simplified hash
-	sig, err := crypto.Sign(hash, c.privKey)
+	// Create gRPC connection
+	grpcConn, err := grpc.Dial(network.ChainGrpcEndpoint, grpc.WithInsecure())
 	if err != nil {
-		return "", fmt.Errorf("failed to sign transaction: %w", err)
+		return "", fmt.Errorf("failed to dial gRPC: %w", err)
 	}
+	defer grpcConn.Close()
 
-	// Create raw transaction
-	txRaw := &types.TxRaw{
-		BodyBytes:     txBodyBytes,
-		AuthInfoBytes: authInfoBytes,
-		Signatures:    [][]byte{sig},
-	}
+	// Create client context
+	clientCtx := client.Context{}.
+		WithChainID(network.ChainId).
+		WithKeyring(kr).
+		WithFromAddress(sdk.MustAccAddressFromBech32(c.accountAddress)).
+		WithFromName("default").
+		WithNodeURI(network.TmEndpoint).
+		WithCodec(cdc).
+		WithInterfaceRegistry(registry)
 
-	// Serialize raw transaction
-	txRawBytes, err := proto.Marshal(txRaw)
+	// Create chain client
+	chainClient, err := chainclient.NewChainClient(clientCtx, network, common.OptionGasPrices("0.0005inj"))
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal tx raw: %w", err)
+		return "", fmt.Errorf("failed to create chain client: %w", err)
 	}
+	defer chainClient.Close()
 
-	// Prepare REST request
-	txRequest := map[string]interface{}{
-		"tx_bytes": txRawBytes,
-		"mode":     "BROADCAST_MODE_SYNC",
-	}
-	reqBytes, err := json.Marshal(txRequest)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal tx request: %w", err)
-	}
+	c.logger.Info("Chain client created, preparing transaction")
 
-	// Send REST request
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://public.api.injective.network/cosmos/tx/v1beta1/txs", bytes.NewReader(reqBytes))
+	// Broadcast transaction
+	txResp, err := chainClient.SyncBroadcastMsg(msg)
 	if err != nil {
-		return "", fmt.Errorf("failed to create REST request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
+		c.logger.Error("Failed to broadcast transaction", "error", err)
 		return "", fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("REST API returned non-200 status: %d", resp.StatusCode)
-	}
-
-	// Parse response
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	txResponse, ok := result["tx_response"].(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("invalid tx_response format")
-	}
-	txHash, ok := txResponse["txhash"].(string)
-	if !ok {
-		return "", fmt.Errorf("txhash not found in response")
-	}
-
+	txHash := txResp.TxResponse.TxHash
+	c.logger.Info("Transaction broadcast successful", "txhash", txHash)
 	return txHash, nil
 }
 
@@ -469,4 +411,5 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// Ensure ExchangeClient interface is implemented
 var _ExchangeClient = (*Client)(nil)

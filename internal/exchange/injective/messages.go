@@ -30,33 +30,20 @@ import (
 // This returns a cosmostypes.Msg which is the expected input for QueueBroadcastMsg.
 func createBatchUpdateMessage(
 	senderAddress string,
-	subaccountID string, // Hex representation of the subaccount ID
+	subaccountID string,
 	spotMarketIDsToCancelAll []string,
 	derivativeMarketIDsToCancelAll []string,
-	spotOrdersToCreate []*exchangetypes.SpotOrder, // Use exchangetypes.SpotOrder type
-	derivativeOrdersToCreate []*exchangetypes.DerivativeOrder, // Use exchangetypes.DerivativeOrder type
-	// Add fields for cancelling specific orders if needed
-	// spotOrdersToCancel []*exchangetypes.SpotOrder // Requires MarketId, SubaccountId, OrderHash or Cid
-	// derivativeOrdersToCancel []*exchangetypes.DerivativeOrder // Requires MarketId, SubaccountId, OrderHash or Cid
-) cosmostypes.Msg { // Return the common Msg interface type
-
+	spotOrdersToCreate []*exchangetypes.SpotOrder,
+	derivativeOrdersToCreate []*exchangetypes.DerivativeOrder,
+) cosmostypes.Msg {
 	msg := &exchangetypes.MsgBatchUpdateOrders{
-		Sender: senderAddress,
-		// SubaccountId is needed *only* if cancelling all orders for a market.
-		// If only cancelling specific orders or only creating orders, SubaccountId can be empty.
-		// Since our strategy uses ReplaceQuotes which cancels ALL, SubaccountId is always required.
-		SubaccountId: subaccountID,
-
-		SpotMarketIdsToCancelAll: spotMarketIDsToCancelAll,
-		DerivativeMarketIdsToCancelAll: derivativeMarketIdsToCancelAll,
-
-		SpotOrdersToCreate: spotOrdersToCreate, // Use exchangetypes.SpotOrder type
-		DerivativeOrdersToCreate: derivativeOrdersToCreate,
-
-		// Add specific orders to cancel here if needed
-		// SpotOrdersToCancel: spotOrdersToCancel,
-		// DerivativeOrdersToCancel: derivativeOrdersToCancel,
+		Sender:                        senderAddress,
+		SubaccountId:                  subaccountID,
+		SpotMarketIdsToCancelAll:      spotMarketIDsToCancelAll,
+		DerivativeMarketIdsToCancelAll: derivativeMarketIDsToCancelAll, // Corrected variable name
+		SpotOrdersToCreate:            spotOrdersToCreate,
+		DerivativeOrdersToCreate:      derivativeOrdersToCreate,
 	}
 
-	return msg // Return as cosmostypes.Msg
+	return msg
 }

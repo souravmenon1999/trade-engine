@@ -5,7 +5,6 @@ import (
 	"context"
 	"github.com/souravmenon1999/trade-engine/internal/types"
 	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
-	"github.com/souravmenon1999/trade-engine/internal/exchange/injective"
 
 )
 
