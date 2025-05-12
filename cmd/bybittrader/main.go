@@ -1,4 +1,5 @@
 // cmd/bybittrader/main.go
+
 package main
 
 import (
@@ -19,7 +20,7 @@ import (
 func main() {
 	// Load configuration
 	// This main assumes a config.yaml file is present and structured correctly.
-	cfg, err := config.LoadConfig("configs/config.yaml")
+	cfg, err := config.LoadConfig("configs/bybittrader_config.yaml") // Load the Bybit Trader config
 	if err != nil {
 		fmt.Printf("Failed to load configuration: %v\n", err)
 		os.Exit(1)
@@ -37,39 +38,33 @@ func main() {
 
 	// --- Initialize Bybit Data Client ---
 	// This client provides the orderbook data feed from Bybit.
-	// Use bybit.NewClient from client.go
-	bybitDataClient, err := bybit.NewClient(ctx, &cfg.Bybit) // Use bybit.NewClient from client.go
-	if err != nil {
-		logger.Error("Failed to initialize Bybit data client", "error", err)
-		os.Exit(1) // Data feed is essential
-	} else {
-		logger.Info("Bybit data client initialized.")
-	}
+	// FIX: bybit.NewClient returns only ONE value (*Client), not two.
+	bybitDataClient := bybit.NewClient(ctx, &cfg.Bybit) // Assign to one variable
+	// We should ideally check for initialization errors, but based on your client.go
+	// definition, errors are returned by methods like SubscribeOrderbook.
+	logger.Info("Bybit data client initialized.")
 
 	// Start the orderbook subscription (price data source)
-	err = bybitDataClient.SubscribeOrderbook(ctx, cfg.Bybit.Symbol)
+	// Declare 'err' here for subsequent assignments if not already declared
+	// (If you had other err declarations above, remove 'var' or ':=' as appropriate)
+	// Since we used ':=' for cfg, err above, we reuse err here:
+	err = bybitDataClient.SubscribeOrderbook(ctx, cfg.Bybit.Symbol) // Assign error here
 	if err != nil {
 		logger.Error("Failed to start Bybit orderbook subscription", "error", err)
 		// If the price feed fails, the strategy cannot operate.
-		// Decide if this should be a fatal error or if reconnect logic is sufficient.
-		// For now, log error and let the app continue, but trading won't happen without data.
+		// Decide if this is a fatal error or if reconnect logic is sufficient.
+		// For now, exit if subscription fails initially.
+		os.Exit(1) // Exit if subscription fails
 	} else {
 		logger.Info("Bybit orderbook subscription initiated.")
 	}
 
 	// --- Initialize Bybit Trading Client ---
 	// This client handles trading operations via REST API.
-	// We need to pass the trading category here since it's not in config.BybitConfig
-	// Assuming the category is hardcoded or available elsewhere (e.g., env var).
-	// For this example, let's hardcode "linear" or get it from a non-config source.
-	// A better approach would be to add it to config.BybitConfig if possible.
-	// Let's assume we can get it from an environment variable or hardcode for now.
-	// Example: tradingCategory := os.Getenv("BYBIT_TRADING_CATEGORY")
-	// If not using env var, hardcode:
-	tradingCategory := "linear" // <-- Hardcoded trading category, replace as needed
-
-	// Use bybit.NewTradingClient
-	bybitTradingClient, err := bybit.NewTradingClient(ctx, &cfg.Bybit, tradingCategory) // Use bybit.NewTradingClient
+	// It gets necessary config (API keys, URL, Category) from the loaded config.
+	// Remove the separate tradingCategory argument from the call if you put it back.
+	// Ensure NewTradingClient also returns (*TradingClient, error) if you haven't already fixed that.
+	bybitTradingClient, err := bybit.NewTradingClient(ctx, &cfg.Bybit) // This call should return 2 values
 	if err != nil {
 		logger.Error("Failed to initialize Bybit trading client", "error", err)
 		os.Exit(1) // Trading is essential for this bot

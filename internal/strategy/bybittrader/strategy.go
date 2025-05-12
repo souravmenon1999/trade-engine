@@ -3,16 +3,15 @@ package bybittrader
 
 import (
 	"context"
-	"fmt" // Used for logging/error messages
+	
 	"sync"
-	"sync/atomic" // Keep atomic, although mutex is used for string IDs
+	
 	"time" // Import time for sleep/timeouts
-	"trading-system/internal/config"
-	"trading-system/internal/exchange/bybit" // Import concrete Bybit clients
-	"trading-system/internal/exchange" // Use the interface type if interacting generically (not used for trading in this specific package)
-	"trading-system/internal/logging"
-	"trading-system/internal/processor"
-	"trading-system/internal/types"
+	"github.com/souravmenon1999/trade-engine/internal/config"
+	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit" // Import concrete Bybit clients
+	"github.com/souravmenon1999/trade-engine/internal/logging"
+	"github.com/souravmenon1999/trade-engine/internal/processor"
+	"github.com/souravmenon1999/trade-engine/internal/types"
 	"log/slog"
 )
 

@@ -692,9 +692,9 @@ func (c *TradingClient) SubmitOrder(ctx context.Context, order types.Order) (str
 // cancelSingleOrder cancels a single open order by OrderId or ClientOrderId.
 // This uses the Bybit REST API endpoint /v5/order/cancel.
 // This is a private helper method for the Bybit client.
-func (c *TradingClient) cancelSingleOrder(ctx context.Context, orderID string, symbol string) error {
+func (c *TradingClient) CancelSingleOrder(ctx context.Context, orderID string, symbol string) error { // Changed name to Capital C
     if orderID == "" {
-        c.logger.Debug("cancelSingleOrder called with empty orderID, nothing to cancel")
+        c.logger.Debug("CancelSingleOrder called with empty orderID, nothing to cancel") // Update log message
         return nil // Not an error, just nothing to do
     }
      if c.cfg.APIKey == "" || c.cfg.APISecret == "" || c.cfg.TradingURL == "" { // Use cfg fields
