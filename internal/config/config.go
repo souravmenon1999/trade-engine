@@ -20,6 +20,10 @@ type Config struct {
 type BybitConfig struct {
 	WSURL  string `mapstructure:"ws_url"`
 	Symbol string `mapstructure:"symbol"`
+	TradingURL  string `yaml:"trading_url"`   
+    APIKey      string `yaml:"api_key"`      
+    APISecret   string `yaml:"api_secret"`    
+    Category    string `yaml:"category"`      
 }
 
 // InjectiveConfig holds Injective specific settings.
