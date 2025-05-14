@@ -3,7 +3,7 @@ package bybit
 
 import "encoding/json"
 import "fmt" // Import fmt for Error method
-import "github.com/shopspring/decimal" 
+import "github.com/shopspring/decimal" // Ensure this import is here
 
 // Bybit WebSocket message types and constants
 const (

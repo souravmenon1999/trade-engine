@@ -108,7 +108,7 @@ func NewClient(ctx context.Context, cfg *config.BybitConfig) *Client {
 		logger:     logging.GetLogger().With("exchange", "bybit"),
 		ctx:        clientCtx,
 		cancel:     cancel,
-		obUpdateSignalChan: make(chan struct{}, 1), // Buffered channel to avoid blocking sender
+		obUpdateSignalChan: make(chan struct{},10), // Buffered channel to avoid blocking sender
 	}
 }
 
@@ -393,12 +393,12 @@ func (c *Client) handleDelta(msg WSMessage) {
 	c.orderbook.UpdateTimestamp()
 	c.expectedSeq.Store(receivedSeq + 1) // Update expected sequence for the next delta
 
-	c.logger.Debug("Orderbook delta processed", "seq", receivedSeq)
+	// c.logger.Debug("Orderbook delta processed", "seq", receivedSeq)
 
 	// Signal that the orderbook has been updated (non-blocking send)
 	select {
 	case c.obUpdateSignalChan <- struct{}{}:
-		c.logger.Debug("Orderbook update signal sent after delta")
+		// c.logger.Debug("Orderbook update signal sent after delta")
 	default:
 		// This is expected if the strategy is not keeping up or the channel is small
 		c.logger.Debug("Orderbook update signal channel full after delta, skipping send")
@@ -427,11 +427,11 @@ func (c *Client) populateOrderbookLevels(levelsMap *sync.Map, entries [][]json.R
 			continue
 		}
 
-		c.logger.Debug("Raw Price Level Received (Snapshot)",
-            "side", side,
-            "price_str", priceStr,
-            "quantity_str", quantityStr,
-        )
+		// c.logger.Debug("Raw Price Level Received (Snapshot)",
+        //     "side", side,
+        //     "price_str", priceStr,
+        //     "quantity_str", quantityStr,
+        // )
 
 		// Parse the string as float64
 		priceFloat, err := strconv.ParseFloat(priceStr, 64)
@@ -464,7 +464,7 @@ func (c *Client) populateOrderbookLevels(levelsMap *sync.Map, entries [][]json.R
 			// New price level
 			level = &types.PriceLevel{Price: scaledPrice}
 			levelsMap.Store(scaledPrice, level)
-			c.logger.Debug("Added price level from snapshot", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
+			// c.logger.Debug("Added price level from snapshot", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
 		}
 		// Update quantity using atomic store
 		level.(*types.PriceLevel).Quantity.Store(scaledQuantity)
@@ -478,7 +478,7 @@ func (c *Client) populateOrderbookLevels(levelsMap *sync.Map, entries [][]json.R
 func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.RawMessage, side types.Side) {
 	for _, entry := range updates {
 		if len(entry) != 2 {
-			c.logger.Warn("Unexpected level entry format in delta", "entry", string(entry[0])) // Log raw bytes for debug
+			// c.logger.Warn("Unexpected level entry format in delta", "entry", string(entry[0])) // Log raw bytes for debug
 			continue
 		}
 
@@ -495,11 +495,11 @@ func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.Raw
 			continue
 		}
 
-		c.logger.Debug("Raw Price Level Received (Delta)",
-            "side", side,
-            "price_str", priceStr,
-            "quantity_str", quantityStr,
-        )
+		// c.logger.Debug("Raw Price Level Received (Delta)",
+        //     "side", side,
+        //     "price_str", priceStr,
+        //     "quantity_str", quantityStr,
+        // )
 
 
 		// Parse the string as float64
@@ -529,7 +529,7 @@ func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.Raw
 		if scaledQuantity == 0 {
 			// Quantity 0 means remove the level
 			if _, loaded := levelsMap.LoadAndDelete(scaledPrice); loaded {
-				c.logger.Debug("Removed price level from delta", "side", side, "price", priceFloat, "scaled_price", scaledPrice)
+				// c.logger.Debug("Removed price level from delta", "side", side, "price", priceFloat, "scaled_price", scaledPrice)
 			} else {
                  c.logger.Debug("Attempted to remove non-existent price level from delta", "side", side, "price", priceFloat, "scaled_price", scaledPrice)
             }
@@ -541,11 +541,11 @@ func (c *Client) updateOrderbookLevels(levelsMap *sync.Map, updates [][]json.Raw
 				// New price level
 				level = &types.PriceLevel{Price: scaledPrice}
 				levelsMap.Store(scaledPrice, level)
-				c.logger.Debug("Added new price level from delta", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
+				// c.logger.Debug("Added new price level from delta", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
 			}
 			// Update quantity using atomic store
 			level.(*types.PriceLevel).Quantity.Store(scaledQuantity)
-			c.logger.Debug("Updated price level quantity from delta", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
+			// c.logger.Debug("Updated price level quantity from delta", "side", side, "price", priceFloat, "quantity", quantityFloat, "scaled_price", scaledPrice, "scaled_quantity", scaledQuantity)
 		}
 	}
 }

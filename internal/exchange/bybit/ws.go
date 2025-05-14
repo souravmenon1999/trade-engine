@@ -213,7 +213,7 @@ func (w *WSConnection) readMessages() {
 			// Send the unmarshaled message to the message channel
 			select {
 			case w.msgChan <- wsMsg:
-				w.logger.Debug("Message received and sent to channel", "topic", wsMsg.Topic, "type", wsMsg.Type)
+				// w.logger.Debug("Message received and sent to channel", "topic", wsMsg.Topic, "type", wsMsg.Type)
 			case <-w.ctx.Done():
 				w.logger.Debug("Context done while sending to message channel")
 				return // Context cancelled while trying to send to channel

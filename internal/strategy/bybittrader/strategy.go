@@ -3,22 +3,21 @@ package bybittrader
 
 import (
 	"context"
-	
+
 	"sync"
-	
+
+	"log/slog"
 	"time" // Import time for sleep/timeouts
+
 	"github.com/souravmenon1999/trade-engine/internal/config"
 	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit" // Import concrete Bybit clients
 	"github.com/souravmenon1999/trade-engine/internal/logging"
 	"github.com/souravmenon1999/trade-engine/internal/processor"
 	"github.com/souravmenon1999/trade-engine/internal/types"
-	"log/slog"
 )
 
 // Strategy orchestrates trading on Bybit based on Bybit's own price feed.
-// It maintains one buy and one sell limit order, amending them as price changes
-// signaled by the price processor. It uses the concrete Bybit trading client
-// for specific Bybit API calls like Amend and Cancel.
+
 type Strategy struct {
 	cfg *config.Config // Full configuration
 
@@ -29,46 +28,36 @@ type Strategy struct {
 	bybitTradingClient *bybit.TradingClient
 
 	priceProcessor *processor.PriceProcessor
-	logger *slog.Logger
+	logger         *slog.Logger
 
-	ctx context.Context
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	// State to track current open orders placed by THIS strategy instance.
 	// Uses a mutex to protect access to the string IDs.
-	orderStateMu sync.Mutex
-	currentBuyOrderID string // Exchange Order ID of the current buy quote
+	orderStateMu       sync.Mutex
+	currentBuyOrderID  string // Exchange Order ID of the current buy quote
 	currentSellOrderID string // Exchange Order ID of the current sell quote
 
-	// Optional: Track the last quoted prices if needed for specific amendment logic
-	// beyond the processor signal. Not strictly used in the current logic.
-	// lastQuotedBidPrice atomic.Uint64
-	// lastQuotedAskPrice atomic.Uint64
-
-    // Note: This simple strategy doesn't explicitly track in-flight operations
-    // per order ID (e.g., a map[string]bool). The concurrency protection relies
-    // on checking the tracked ID (*orderIDPtr) against the ID being operated on
-    // within the goroutines before updating/clearing. For a strategy managing
-    // many orders or complex state, tracking in-flight operations might be needed.
 }
 
 // NewStrategy creates a new Bybit trader strategy.
 // Expects both the concrete Bybit data client and trading client implementations.
 func NewStrategy(ctx context.Context, cfg *config.Config,
 	bybitDataClient *bybit.Client, // Concrete Bybit data client
-    bybitTradingClient *bybit.TradingClient, // Concrete Bybit trading client
+	bybitTradingClient *bybit.TradingClient, // Concrete Bybit trading client
 	priceProcessor *processor.PriceProcessor,
 ) *Strategy {
 	strategyCtx, cancel := context.WithCancel(ctx)
 
 	s := &Strategy{
-		cfg: cfg,
-		bybitDataClient: bybitDataClient, // Store the data client
-        bybitTradingClient: bybitTradingClient, // Store the trading client
-		priceProcessor: priceProcessor,
-		logger: logging.GetLogger().With("component", "bybit_trader_strategy"),
-		ctx: strategyCtx,
-		cancel: cancel,
+		cfg:                cfg,
+		bybitDataClient:    bybitDataClient,    // Store the data client
+		bybitTradingClient: bybitTradingClient, // Store the trading client
+		priceProcessor:     priceProcessor,
+		logger:             logging.GetLogger().With("component", "bybit_trader_strategy"),
+		ctx:                strategyCtx,
+		cancel:             cancel,
 	}
 
 	s.logger.Info("Bybit Trader Strategy initialized.")
@@ -102,30 +91,33 @@ func (s *Strategy) Run() {
 				return
 			}
 
-			s.logger.Debug("Received orderbook update signal from Bybit. Processing...")
+			// s.logger.Debug("Received orderbook update signal from Bybit. Processing...")
 
 			// Get the latest orderbook snapshot from the Bybit data client.
 			// This snapshot is safe to access from the main goroutine.
 			obSnapshot := s.bybitDataClient.GetOrderbook()
 			if obSnapshot == nil || obSnapshot.Instrument == nil {
-				s.logger.Warn("Received update signal but Bybit orderbook snapshot is nil or invalid. Skipping processing.")
+				// s.logger.Warn("Received update signal but Bybit orderbook snapshot is nil or invalid. Skipping processing.")
 				continue // Skip this update and wait for the next signal
 			}
+            // s.logger.Debug("Calling price processor...")
 
-			// Process the orderbook to generate target quotes.
-            // Note: The PriceProcessor might be generic and generate orders with a
-            // generic types.Exchange field (e.g., types.ExchangeInjective).
-            // The bybit.TradingClient methods used below (SubmitOrder, AmendOrder, etc.)
-            // must be implemented to correctly interact with the Bybit API and should
-            // typically ignore or correctly translate such generic fields if necessary,
-            // relying on the instrument details passed. In this code, AmendOrder and
-            // cancelSingleOrder explicitly take instrument/symbol details, which is good.
 			bidOrderTarget, askOrderTarget, shouldQuote, err := s.priceProcessor.ProcessOrderbook(obSnapshot)
 
+            // s.logger.Debug("Price processor returned.", "should_quote", shouldQuote, "error", err)
+
+
 			if err != nil {
-				s.logger.Error("Price processor failed to generate quotes", "error", err)
+				// s.logger.Error("Price processor failed to generate quotes", "error", err)
 				continue // Continue listening for the next update
 			}
+
+			  s.logger.Debug("Processor output",
+			  	"should_quote", shouldQuote,
+			  	"bid_target", bidOrderTarget, // Log the generated bid order (might be nil)
+			  	"ask_target", askOrderTarget, // Log the generated ask order (might be nil)
+			 	"processor_err", err, // Log any error from the processor
+			  )
 
 			if shouldQuote {
 				s.logger.Debug("Processor signaled to quote, attempting to update orders.")
@@ -148,36 +140,36 @@ func (s *Strategy) Run() {
 					} else {
 						// Existing buy order tracked, attempt to amend it to the new target.
 						s.logger.Info("Attempting to amend existing buy order",
-                            "order_id", buyOrderID,
-                            "new_price", bidOrderTarget.Price,
-                            "new_quantity", bidOrderTarget.Quantity,
-                         )
-                        // Use a goroutine for fire-and-forget amendment.
-                        // Pass the concrete trading client and details needed for amendment.
+							"order_id", buyOrderID,
+							"new_price", bidOrderTarget.Price,
+							"new_quantity", bidOrderTarget.Quantity,
+						)
+						// Use a goroutine for fire-and-forget amendment.
+						// Pass the concrete trading client and details needed for amendment.
 						go s.amendAndTrackOrder(
-                            s.ctx,
-                            s.bybitTradingClient,
-                            buyOrderID,
-                            obSnapshot.Instrument, // Pass instrument details for API call
-                            bidOrderTarget.Price,
-                            bidOrderTarget.Quantity,
-                            &s.currentBuyOrderID, // Pass pointer to update ID if needed
-                         )
+							s.ctx,
+							s.bybitTradingClient,
+							buyOrderID,
+							obSnapshot.Instrument, // Pass instrument details for API call
+							bidOrderTarget.Price,
+							bidOrderTarget.Quantity,
+							&s.currentBuyOrderID, // Pass pointer to update ID if needed
+						)
 					}
-                    // Optional: Update tracked last quoted price if used elsewhere.
-                    // s.lastQuotedBidPrice.Store(bidOrderTarget.Price)
+					// Optional: Update tracked last quoted price if used elsewhere.
+					// s.lastQuotedBidPrice.Store(bidOrderTarget.Price)
 				} else {
-                    // Processor did not generate a buy quote (e.g., insufficient liquidity, spread too tight).
-                    // If there is an existing buy order tracked, cancel it.
-                     if buyOrderID != "" {
-                         s.logger.Info("Processor did not generate buy quote, attempting to cancel existing buy order", "order_id", buyOrderID)
-                         // Use a goroutine for fire-and-forget cancellation.
-                         // Pass the concrete trading client and order details.
-                         go s.cancelAndClearOrder(s.ctx, s.bybitTradingClient, buyOrderID, obSnapshot.Instrument, &s.currentBuyOrderID)
-                     } else {
-                          s.logger.Debug("Processor did not generate buy quote, and no existing buy order tracked. Nothing to do.")
-                     }
-                }
+					// Processor did not generate a buy quote (e.g., insufficient liquidity, spread too tight).
+					// If there is an existing buy order tracked, cancel it.
+					if buyOrderID != "" {
+						s.logger.Info("Processor did not generate buy quote, attempting to cancel existing buy order", "order_id", buyOrderID)
+						// Use a goroutine for fire-and-forget cancellation.
+						// Pass the concrete trading client and order details.
+						go s.cancelAndClearOrder(s.ctx, s.bybitTradingClient, buyOrderID, obSnapshot.Instrument, &s.currentBuyOrderID)
+					} else {
+						s.logger.Debug("Processor did not generate buy quote, and no existing buy order tracked. Nothing to do.")
+					}
+				}
 
 				// Handle Sell Order: Check if a new quote exists and if we need to Submit or Amend.
 				if askOrderTarget != nil {
@@ -190,46 +182,46 @@ func (s *Strategy) Run() {
 					} else {
 						// Existing sell order tracked, attempt to amend it to the new target.
 						s.logger.Info("Attempting to amend existing sell order",
-                            "order_id", sellOrderID,
-                            "new_price", askOrderTarget.Price,
-                            "new_quantity", askOrderTarget.Quantity,
-                         )
-                        // Use a goroutine for fire-and-forget amendment.
+							"order_id", sellOrderID,
+							"new_price", askOrderTarget.Price,
+							"new_quantity", askOrderTarget.Quantity,
+						)
+						// Use a goroutine for fire-and-forget amendment.
 						go s.amendAndTrackOrder(
-                            s.ctx,
-                            s.bybitTradingClient,
-                            sellOrderID,
-                            obSnapshot.Instrument, // Pass instrument details for API call
-                            askOrderTarget.Price,
-                            askOrderTarget.Quantity,
-                            &s.currentSellOrderID, // Pass pointer to update ID if needed
-                         )
+							s.ctx,
+							s.bybitTradingClient,
+							sellOrderID,
+							obSnapshot.Instrument, // Pass instrument details for API call
+							askOrderTarget.Price,
+							askOrderTarget.Quantity,
+							&s.currentSellOrderID, // Pass pointer to update ID if needed
+						)
 					}
-                     // Optional: Update tracked last quoted price.
-                     // s.lastQuotedAskPrice.Store(askOrderTarget.Price)
+					// Optional: Update tracked last quoted price.
+					// s.lastQuotedAskPrice.Store(askOrderTarget.Price)
 				} else {
-                    // Processor did not generate a sell quote.
-                    // If there is an existing sell order tracked, cancel it.
-                    if sellOrderID != "" {
-                         s.logger.Info("Processor did not generate sell quote, attempting to cancel existing sell order", "order_id", sellOrderID)
-                         // Use a goroutine for fire-and-forget cancellation.
-                         go s.cancelAndClearOrder(s.ctx, s.bybitTradingClient, sellOrderID, obSnapshot.Instrument, &s.currentSellOrderID)
-                     } else {
-                         s.logger.Debug("Processor did not generate sell quote, and no existing sell order tracked. Nothing to do.")
-                     }
-                }
+					// Processor did not generate a sell quote.
+					// If there is an existing sell order tracked, cancel it.
+					if sellOrderID != "" {
+						s.logger.Info("Processor did not generate sell quote, attempting to cancel existing sell order", "order_id", sellOrderID)
+						// Use a goroutine for fire-and-forget cancellation.
+						go s.cancelAndClearOrder(s.ctx, s.bybitTradingClient, sellOrderID, obSnapshot.Instrument, &s.currentSellOrderID)
+					} else {
+						s.logger.Debug("Processor did not generate sell quote, and no existing sell order tracked. Nothing to do.")
+					}
+				}
 			} else {
-                // Processor said NOT to quote (e.g., cooldown active, price threshold not met).
-                // We do nothing with existing orders.
-                s.logger.Debug("Processor did not signal to quote. Maintaining existing orders (if any).")
-            }
+				// Processor said NOT to quote (e.g., cooldown active, price threshold not met).
+				// We do nothing with existing orders.
+				// s.logger.Debug("Processor did not signal to quote. Maintaining existing orders (if any).")
+			}
 		}
 	}
 }
 
 // submitAndTrackOrder submits a new order using the trading client and updates
 // the tracked order ID upon successful API response. Runs in a goroutine.
-// orderIDPtr is a pointer to either s.currentBuyOrderID or s.currentSellOrderID.
+
 func (s *Strategy) submitAndTrackOrder(ctx context.Context, tradingClient *bybit.TradingClient, order *types.Order, orderIDPtr *string) {
 	if tradingClient == nil || order == nil || orderIDPtr == nil {
 		s.logger.Error("submitAndTrackOrder called with nil client, order, or ID pointer")
@@ -242,19 +234,17 @@ func (s *Strategy) submitAndTrackOrder(ctx context.Context, tradingClient *bybit
 
 	s.logger.Info("Submitting order...", "order_side", order.Side, "order_price", order.Price, "order_qty", order.Quantity, "order_symbol", order.Instrument.Symbol)
 
-    // Call the TradingClient's SubmitOrder method.
+	// Call the TradingClient's SubmitOrder method.
 	exchangeOrderID, err := tradingClient.SubmitOrder(submitCtx, *order) // Pass order by value
 
 	if err != nil {
 		s.logger.Error("Order submission failed", "order_side", order.Side, "error", err)
 		// If submission fails, the tracked ID should remain empty or be cleared
-		// so the next processing cycle attempts to submit again.
-        // The *orderIDPtr should ideally already be empty if we were attempting to submit.
-        // Defensive check: ensure it's empty.
-        s.orderStateMu.Lock()
-        *orderIDPtr = "" // Ensure the tracked ID is cleared on submission failure
-        s.orderStateMu.Unlock()
-        s.logger.Debug("Cleared tracked order ID after submission failure.")
+
+		s.orderStateMu.Lock()
+		*orderIDPtr = "" // Ensure the tracked ID is cleared on submission failure
+		s.orderStateMu.Unlock()
+		s.logger.Debug("Cleared tracked order ID after submission failure.")
 
 	} else {
 		s.logger.Info("Order submitted successfully", "order_side", order.Side, "exchange_order_id", exchangeOrderID)
@@ -264,39 +254,32 @@ func (s *Strategy) submitAndTrackOrder(ctx context.Context, tradingClient *bybit
 		s.orderStateMu.Unlock()
 		s.logger.Debug("Tracked order ID updated after submission", "side", order.Side, "new_id", exchangeOrderID)
 
-		// TODO: Consider starting a goroutine here to monitor this order's status
-		// (e.g., query by ID, listen to user data stream) for more robust state management.
-		// For this simple strategy, relying on subsequent processor signals is sufficient
-		// to trigger amendments or cancellations.
 	}
 }
 
-// amendAndTrackOrder attempts to amend an existing order using the trading client.
-// It updates the tracked order ID if the amendment is successful and the API
-// returns a potentially new ID (though Bybit typically keeps the same ID).
 // Runs in a goroutine. orderIDPtr points to the tracked order ID variable.
 func (s *Strategy) amendAndTrackOrder(ctx context.Context, tradingClient *bybit.TradingClient, currentOrderID string, instrument *types.Instrument, newPrice uint64, newQuantity uint64, orderIDPtr *string) {
-    if tradingClient == nil || orderIDPtr == nil {
-        s.logger.Error("amendAndTrackOrder called with nil client or ID pointer")
-        return
-    }
-     if currentOrderID == "" {
-         s.logger.Error("amendAndTrackOrder called with empty currentOrderID. Cannot amend.", "symbol", instrument.Symbol)
-         // If the ID is unexpectedly empty here, clear the tracked ID defensively.
-          s.orderStateMu.Lock()
-         *orderIDPtr = ""
-          s.orderStateMu.Unlock()
-         return
-     }
-     if instrument == nil {
-         s.logger.Error("amendAndTrackOrder called with nil instrument. Cannot amend.", "order_id", currentOrderID)
-         // Cannot amend without instrument/symbol info.
-         // Clear the tracked ID defensively so a new order is attempted next cycle.
-          s.orderStateMu.Lock()
-         *orderIDPtr = ""
-          s.orderStateMu.Unlock()
-         return
-     }
+	if tradingClient == nil || orderIDPtr == nil {
+		s.logger.Error("amendAndTrackOrder called with nil client or ID pointer")
+		return
+	}
+	if currentOrderID == "" {
+		s.logger.Error("amendAndTrackOrder called with empty currentOrderID. Cannot amend.", "symbol", instrument.Symbol)
+		// If the ID is unexpectedly empty here, clear the tracked ID defensively.
+		s.orderStateMu.Lock()
+		*orderIDPtr = ""
+		s.orderStateMu.Unlock()
+		return
+	}
+	if instrument == nil {
+		s.logger.Error("amendAndTrackOrder called with nil instrument. Cannot amend.", "order_id", currentOrderID)
+		// Cannot amend without instrument/symbol info.
+		// Clear the tracked ID defensively so a new order is attempted next cycle.
+		s.orderStateMu.Lock()
+		*orderIDPtr = ""
+		s.orderStateMu.Unlock()
+		return
+	}
 
 	// Use a derived context with timeout for the API call.
 	amendCtx, cancel := context.WithTimeout(ctx, 15*time.Second) // Timeout for amendment
@@ -304,7 +287,7 @@ func (s *Strategy) amendAndTrackOrder(ctx context.Context, tradingClient *bybit.
 
 	s.logger.Info("Attempting to amend order...", "order_id", currentOrderID, "symbol", instrument.Symbol, "new_price", newPrice, "new_quantity", newQuantity)
 
-    // Call the TradingClient's AmendOrder method.
+	// Call the TradingClient's AmendOrder method.
 	amendedOrderID, err := tradingClient.AmendOrder(amendCtx, currentOrderID, instrument, newPrice, newQuantity)
 
 	if err != nil {
@@ -320,32 +303,32 @@ func (s *Strategy) amendAndTrackOrder(ctx context.Context, tradingClient *bybit.
 			s.orderStateMu.Unlock()
 			s.logger.Warn("Cleared tracked order ID after amendment failure", "old_id", currentOrderID)
 		} else {
-             s.orderStateMu.Unlock() // Unlock in this branch too
-             s.logger.Debug("Amendment failed, but tracked ID was already updated by another operation", "failed_id", currentOrderID, "current_tracked_id", *orderIDPtr)
-        }
+			s.orderStateMu.Unlock() // Unlock in this branch too
+			s.logger.Debug("Amendment failed, but tracked ID was already updated by another operation", "failed_id", currentOrderID, "current_tracked_id", *orderIDPtr)
+		}
 
 	} else {
 		s.logger.Info("Order amended successfully", "old_id", currentOrderID, "amended_id", amendedOrderID)
 		// For Bybit Amend, the Order ID typically remains the same.
 		// If the API *does* return a different ID, update the tracked ID.
 		if amendedOrderID != "" && amendedOrderID != currentOrderID {
-             s.logger.Warn("Bybit Amend returned a different Order ID than requested", "requested_id", currentOrderID, "response_id", amendedOrderID)
-             // Update tracked ID to the new one returned by the API.
-             s.orderStateMu.Lock()
-             // Check again in case it was updated by another goroutine concurrently.
-             if *orderIDPtr == currentOrderID {
-                *orderIDPtr = amendedOrderID // Update to the new ID returned by API
-                s.orderStateMu.Unlock()
-                s.logger.Info("Updated tracked order ID after amendment returned new ID", "old_id", currentOrderID, "new_id", amendedOrderID)
-             } else {
-                  s.orderStateMu.Unlock() // Unlock in this branch
-                  s.logger.Debug("Amendment returned new ID, but tracked ID was already updated by another goroutine", "returned_id", amendedOrderID, "current_tracked_id", *orderIDPtr)
-             }
-         } else {
-             // Amendment successful and ID is the same or empty (if API returns empty on success, though unlikely).
-             // No need to update the tracked ID in this case as it's already correct.
-             s.logger.Debug("Tracked order ID remains the same after successful amendment", "order_id", currentOrderID)
-         }
+			s.logger.Warn("Bybit Amend returned a different Order ID than requested", "requested_id", currentOrderID, "response_id", amendedOrderID)
+			// Update tracked ID to the new one returned by the API.
+			s.orderStateMu.Lock()
+			// Check again in case it was updated by another goroutine concurrently.
+			if *orderIDPtr == currentOrderID {
+				*orderIDPtr = amendedOrderID // Update to the new ID returned by API
+				s.orderStateMu.Unlock()
+				s.logger.Info("Updated tracked order ID after amendment returned new ID", "old_id", currentOrderID, "new_id", amendedOrderID)
+			} else {
+				s.orderStateMu.Unlock() // Unlock in this branch
+				s.logger.Debug("Amendment returned new ID, but tracked ID was already updated by another goroutine", "returned_id", amendedOrderID, "current_tracked_id", *orderIDPtr)
+			}
+		} else {
+			// Amendment successful and ID is the same or empty (if API returns empty on success, though unlikely).
+			// No need to update the tracked ID in this case as it's already correct.
+			s.logger.Debug("Tracked order ID remains the same after successful amendment", "order_id", currentOrderID)
+		}
 	}
 }
 
@@ -353,27 +336,27 @@ func (s *Strategy) amendAndTrackOrder(ctx context.Context, tradingClient *bybit.
 // and clears the tracked order ID upon successful API response. Runs in a goroutine.
 // orderIDPtr points to the tracked order ID variable.
 func (s *Strategy) cancelAndClearOrder(ctx context.Context, tradingClient *bybit.TradingClient, orderID string, instrument *types.Instrument, orderIDPtr *string) {
-     if tradingClient == nil || orderIDPtr == nil {
-        s.logger.Error("cancelAndClearOrder called with nil client or ID pointer")
-        return
-    }
-    if orderID == "" {
-        s.logger.Debug("cancelAndClearOrder called with empty orderID, nothing to cancel")
-        // Ensure the tracked ID is also clear if it was unexpectedly empty.
-         s.orderStateMu.Lock()
-         *orderIDPtr = ""
-         s.orderStateMu.Unlock()
-         return
-    }
-     if instrument == nil {
-         s.logger.Error("cancelAndClearOrder called with nil instrument. Cannot cancel.", "order_id", orderID)
-         // Cannot cancel without instrument/symbol info.
-         // Clear the tracked ID defensively.
-         s.orderStateMu.Lock()
-         *orderIDPtr = ""
-         s.orderStateMu.Unlock()
-         return
-     }
+	if tradingClient == nil || orderIDPtr == nil {
+		s.logger.Error("cancelAndClearOrder called with nil client or ID pointer")
+		return
+	}
+	if orderID == "" {
+		s.logger.Debug("cancelAndClearOrder called with empty orderID, nothing to cancel")
+		// Ensure the tracked ID is also clear if it was unexpectedly empty.
+		s.orderStateMu.Lock()
+		*orderIDPtr = ""
+		s.orderStateMu.Unlock()
+		return
+	}
+	if instrument == nil {
+		s.logger.Error("cancelAndClearOrder called with nil instrument. Cannot cancel.", "order_id", orderID)
+		// Cannot cancel without instrument/symbol info.
+		// Clear the tracked ID defensively.
+		s.orderStateMu.Lock()
+		*orderIDPtr = ""
+		s.orderStateMu.Unlock()
+		return
+	}
 
 	// Use a derived context with timeout for the API call.
 	cancelCtx, cancel := context.WithTimeout(ctx, 10*time.Second) // Timeout for cancellation
@@ -381,8 +364,8 @@ func (s *Strategy) cancelAndClearOrder(ctx context.Context, tradingClient *bybit
 
 	s.logger.Info("Attempting to cancel order...", "order_id", orderID, "symbol", instrument.Symbol)
 
-    // Call the TradingClient's cancelSingleOrder method.
-    // Note: This method name suggests it's concrete to Bybit.
+	// Call the TradingClient's cancelSingleOrder method.
+	// Note: This method name suggests it's concrete to Bybit.
 	err := tradingClient.CancelSingleOrder(cancelCtx, orderID, instrument.Symbol)
 
 	if err != nil {
@@ -390,16 +373,16 @@ func (s *Strategy) cancelAndClearOrder(ctx context.Context, tradingClient *bybit
 		// Handle cancellation failure: log and clear the tracked order ID.
 		// Clearing the ID assumes failure means the order is no longer manageable by this ID,
 		// prompting the strategy to potentially place a new order next cycle.
-        s.orderStateMu.Lock()
+		s.orderStateMu.Lock()
 		// Only clear if the currently tracked ID is still the one we *attempted* to cancel.
 		if *orderIDPtr == orderID {
-        	*orderIDPtr = "" // Clear the tracked ID on failure
-        	s.orderStateMu.Unlock()
-            s.logger.Warn("Cleared tracked order ID after cancellation failure", "old_id", orderID)
-        } else {
-             s.orderStateMu.Unlock() // Unlock in this branch
-             s.logger.Debug("Cancellation failed, but tracked ID was already updated by another operation", "failed_id", orderID, "current_tracked_id", *orderIDPtr)
-        }
+			*orderIDPtr = "" // Clear the tracked ID on failure
+			s.orderStateMu.Unlock()
+			s.logger.Warn("Cleared tracked order ID after cancellation failure", "old_id", orderID)
+		} else {
+			s.orderStateMu.Unlock() // Unlock in this branch
+			s.logger.Debug("Cancellation failed, but tracked ID was already updated by another operation", "failed_id", orderID, "current_tracked_id", *orderIDPtr)
+		}
 
 	} else {
 		s.logger.Info("Order cancelled successfully", "order_id", orderID)
@@ -409,14 +392,14 @@ func (s *Strategy) cancelAndClearOrder(ctx context.Context, tradingClient *bybit
 		// This handles the case where a new order might have been placed (and ID updated)
 		// by the main loop processing a new signal before the cancel goroutine finished.
 		if *orderIDPtr == orderID {
-        	*orderIDPtr = "" // Clear the tracked ID on success
-        	s.orderStateMu.Unlock()
-            s.logger.Debug("Cleared tracked order ID after successful cancellation", "old_id", orderID)
-        } else {
-             s.orderStateMu.Unlock() // Unlock in this branch
-             // This can happen if a new order was placed (and ID updated) before the cancel goroutine finished.
-             s.logger.Debug("Order cancelled successfully, but tracked ID was already updated by another operation", "cancelled_id", orderID)
-        }
+			*orderIDPtr = "" // Clear the tracked ID on success
+			s.orderStateMu.Unlock()
+			s.logger.Debug("Cleared tracked order ID after successful cancellation", "old_id", orderID)
+		} else {
+			s.orderStateMu.Unlock() // Unlock in this branch
+			// This can happen if a new order was placed (and ID updated) before the cancel goroutine finished.
+			s.logger.Debug("Order cancelled successfully, but tracked ID was already updated by another operation", "cancelled_id", orderID)
+		}
 	}
 }
 
@@ -426,64 +409,64 @@ func (s *Strategy) Close() error {
 	s.logger.Info("Bybit Trader Strategy shutting down. Signalling Run loop to stop.")
 	s.cancel() // Signal the Run loop context to cancel
 
-    // Attempt to cancel any remaining open orders tracked by the strategy.
-    // This is a best-effort, fire-and-forget attempt during shutdown.
-    s.orderStateMu.Lock()
-    buyOrderID := s.currentBuyOrderID
-    sellOrderID := s.currentSellOrderID
-    s.orderStateMu.Unlock() // Unlock before potentially calling API methods
+	// Attempt to cancel any remaining open orders tracked by the strategy.
+	// This is a best-effort, fire-and-forget attempt during shutdown.
+	s.orderStateMu.Lock()
+	buyOrderID := s.currentBuyOrderID
+	sellOrderID := s.currentSellOrderID
+	s.orderStateMu.Unlock() // Unlock before potentially calling API methods
 
-    // Get instrument info from the data client's latest orderbook snapshot.
-    // We need the instrument symbol for cancellation API calls.
-    obSnapshot := s.bybitDataClient.GetOrderbook()
-    if obSnapshot == nil || obSnapshot.Instrument == nil {
-         s.logger.Warn("Instrument not available from orderbook snapshot during shutdown cleanup. Cannot cancel orders.")
-         // Cannot cancel without symbol, just log and return.
-         return nil
-    }
-    symbol := obSnapshot.Instrument.Symbol
+	// Get instrument info from the data client's latest orderbook snapshot.
+	// We need the instrument symbol for cancellation API calls.
+	obSnapshot := s.bybitDataClient.GetOrderbook()
+	if obSnapshot == nil || obSnapshot.Instrument == nil {
+		s.logger.Warn("Instrument not available from orderbook snapshot during shutdown cleanup. Cannot cancel orders.")
+		// Cannot cancel without symbol, just log and return.
+		return nil
+	}
+	symbol := obSnapshot.Instrument.Symbol
 
-    // Use a separate context for shutdown cancellation requests with a short timeout.
-    cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // Short timeout for shutdown cancels
-    defer cancel()
+	// Use a separate context for shutdown cancellation requests with a short timeout.
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // Short timeout for shutdown cancels
+	defer cancel()
 
-    var wg sync.WaitGroup // Use a WaitGroup to wait for shutdown cancels to be attempted
+	var wg sync.WaitGroup // Use a WaitGroup to wait for shutdown cancels to be attempted
 
-    if buyOrderID != "" {
-        wg.Add(1)
-        go func(orderID string) {
-            defer wg.Done()
-            s.logger.Info("Attempting to cancel remaining buy order on shutdown", "order_id", orderID)
-            // Call the TradingClient's CancelSingleOrder method.
-            err := s.bybitTradingClient.CancelSingleOrder(cancelCtx, orderID, symbol)
-            if err != nil {
-                 s.logger.Error("Failed to cancel remaining buy order on shutdown", "order_id", orderID, "error", err)
-            } else {
-                 s.logger.Info("Remaining buy order cancelled on shutdown", "order_id", orderID)
-            }
-        }(buyOrderID) // Pass orderID by value to the goroutine
-    }
+	if buyOrderID != "" {
+		wg.Add(1)
+		go func(orderID string) {
+			defer wg.Done()
+			s.logger.Info("Attempting to cancel remaining buy order on shutdown", "order_id", orderID)
+			// Call the TradingClient's CancelSingleOrder method.
+			err := s.bybitTradingClient.CancelSingleOrder(cancelCtx, orderID, symbol)
+			if err != nil {
+				s.logger.Error("Failed to cancel remaining buy order on shutdown", "order_id", orderID, "error", err)
+			} else {
+				s.logger.Info("Remaining buy order cancelled on shutdown", "order_id", orderID)
+			}
+		}(buyOrderID) // Pass orderID by value to the goroutine
+	}
 
-    if sellOrderID != "" {
-        wg.Add(1)
-        go func(orderID string) {
-            defer wg.Done()
-            s.logger.Info("Attempting to cancel remaining sell order on shutdown", "order_id", orderID)
-            // Call the TradingClient's CancelSingleOrder method.
-             err := s.bybitTradingClient.CancelSingleOrder(cancelCtx, orderID, symbol)
-             if err != nil {
-                  s.logger.Error("Failed to cancel remaining sell order on shutdown", "order_id", orderID, "error", err)
-             } else {
-                  s.logger.Info("Remaining sell order cancelled on shutdown", "order_id", orderID)
-             }
-        }(sellOrderID) // Pass orderID by value to the goroutine
-    }
+	if sellOrderID != "" {
+		wg.Add(1)
+		go func(orderID string) {
+			defer wg.Done()
+			s.logger.Info("Attempting to cancel remaining sell order on shutdown", "order_id", orderID)
+			// Call the TradingClient's CancelSingleOrder method.
+			err := s.bybitTradingClient.CancelSingleOrder(cancelCtx, orderID, symbol)
+			if err != nil {
+				s.logger.Error("Failed to cancel remaining sell order on shutdown", "order_id", orderID, "error", err)
+			} else {
+				s.logger.Info("Remaining sell order cancelled on shutdown", "order_id", orderID)
+			}
+		}(sellOrderID) // Pass orderID by value to the goroutine
+	}
 
-    // Wait briefly for shutdown cancellation goroutines to finish.
-    // Use a separate goroutine for the wait to not block the main close path
-    // if wg.Wait() takes longer than the Close caller expects.
-    // Or, just call wg.Wait() and accept it might block briefly. Let's call it directly for simplicity here.
-    wg.Wait()
+	// Wait briefly for shutdown cancellation goroutines to finish.
+	// Use a separate goroutine for the wait to not block the main close path
+	// if wg.Wait() takes longer than the Close caller expects.
+	// Or, just call wg.Wait() and accept it might block briefly. Let's call it directly for simplicity here.
+	wg.Wait()
 
 	s.logger.Info("Shutdown cancellation attempts finished.")
 

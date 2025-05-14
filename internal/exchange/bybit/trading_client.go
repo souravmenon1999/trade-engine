@@ -2,6 +2,7 @@
 package bybit
 
 import (
+   
 	"bytes" // Required for http.NewRequestWithContext body
 	"context"
 	"crypto/hmac"
@@ -89,66 +90,77 @@ type BybitMarketInfo struct {
 // NewTradingClient creates a new Bybit trading-only client.
 // It requires a parent context for cancellation and the config.
 // Assumes config.BybitConfig now contains TradingURL, APIKey, APISecret, Category.
-func NewTradingClient(ctx context.Context, cfg *config.BybitConfig) (*TradingClient, error) { // Signature updated
-	// Instrument details will be populated from fetched market info
-	instrument := &types.Instrument{
-		Symbol: cfg.Symbol, // Get symbol from config
-		BaseCurrency: types.Currency(""), // Populated from market info
-		QuoteCurrency: types.Currency(""), // Populated from market info
-		MinLotSize: atomic.Uint64{}, // Populated from market info (scaled)
-		ContractType: types.ContractTypeUnknown, // Populated from market info if available
-	}
+// NewTradingClient creates a new Bybit trading-only client.
+// It requires a parent context for cancellation and the config.
+// Assumes config.BybitConfig contains TradingURL, APIKey, APISecret, Category.
+func NewTradingClient(ctx context.Context, cfg *config.BybitConfig) (*TradingClient, error) {
+    // Validate config to prevent nil dereferences
+    if cfg == nil {
+        return nil, fmt.Errorf("Bybit config is nil")
+    }
+    if cfg.Symbol == "" || cfg.TradingURL == "" || cfg.Category == "" {
+        return nil, fmt.Errorf("Bybit config missing required fields: symbol=%q, trading_url=%q, category=%q", cfg.Symbol, cfg.TradingURL, cfg.Category)
+    }
+    if cfg.APIKey == "" || cfg.APISecret == "" {
+        return nil, fmt.Errorf("Bybit API credentials missing: api_key=%q, api_secret=%q", cfg.APIKey, cfg.APISecret)
+    }
 
-	clientCtx, cancel := context.WithCancel(ctx)
+    // Initialize logger
+    logger := logging.GetLogger().With("exchange", "bybit_trading")
 
-	client := &TradingClient{ // Return a pointer to TradingClient
-		cfg:        cfg, // Store the config pointer
-		instrument: instrument, // Store the instrument
-		httpClient: &http.Client{Timeout: 15 * time.Second}, // HTTP client for REST
-		logger:     logging.GetLogger().With("exchange", "bybit_trading"),
-		ctx:        clientCtx,
-		cancel:     cancel,
+    // Instrument details will be populated from fetched market info
+    instrument := &types.Instrument{
+        Symbol:        cfg.Symbol,
+        BaseCurrency:  types.Currency(""),
+        QuoteCurrency: types.Currency(""),
+        MinLotSize:    atomic.Uint64{},
+        ContractType:  types.ContractTypeUnknown,
+    }
+
+    clientCtx, cancel := context.WithCancel(ctx)
+
+    client := &TradingClient{
+        cfg:        cfg,
+        instrument: instrument,
+        httpClient: &http.Client{Timeout: 15 * time.Second},
+        logger:     logger,
+        ctx:        clientCtx,
+        cancel:     cancel,
         marketInfo: make(map[string]*BybitMarketInfo),
-        // tradingCategory: tradingCategory, <-- REMOVED
-	}
+    }
+
+    // Log config details for debugging
+    client.logger.Info("Initializing Bybit trading client", "symbol", cfg.Symbol, "category", cfg.Category, "trading_url", cfg.TradingURL)
 
     // Fetch market info on startup (essential for scaling price/quantity)
-    // Use values directly from cfg
-    if client.cfg.TradingURL == "" || client.cfg.Category == "" {
-        client.logger.Warn("Bybit Trading URL or Category not configured. Trading methods will likely fail.")
-    }
-
-    // Use client.ctx for the context passed to fetchMarketInfo
-    // Pass the category from config
+    client.logger.Debug("Fetching market info", "symbol", cfg.Symbol, "category", cfg.Category)
     if err := client.fetchMarketInfo(client.ctx, cfg.Symbol, cfg.Category); err != nil {
-        client.logger.Error("Failed to fetch market info on startup. Trading functionality may be impaired.", "error", err, "symbol", cfg.Symbol)
-        // Decide if this is a fatal error or a warning. For now, log and continue.
-        // Trading methods will check for market info availability.
+        client.logger.Error("Failed to fetch market info on startup", "error", err, "symbol", cfg.Symbol, "category", cfg.Category)
+        // Log error but allow initialization to continue
+        client.logger.Warn("Proceeding without market info; some trading operations may fail")
     } else {
         client.logger.Info("Successfully fetched market info", "symbol", cfg.Symbol)
-         // Update the instrument details from fetched info
-         info := client.getMarketInfo(cfg.Symbol)
-         if info != nil {
-             client.instrument.BaseCurrency = types.Currency(info.BaseCoin)
-             client.instrument.QuoteCurrency = types.Currency(info.QuoteCoin)
-             // Update MinLotSize if your types.Instrument uses scaled integer
-             // Use Float64() instead of InexactFloat64() and use the first return value
-             minQtyFloat, _ := info.MinQuantity.Mul(decimal.NewFromInt(1e6)).Float64()
-             minQtyScaled := uint64(math.Round(minQtyFloat)) // Use math.Round with single float64
-             client.instrument.MinLotSize.Store(minQtyScaled) // Use the calculated value
-             // minQtyScaled variable is now used, resolving the "declared and not used" warning.
-             client.logger.Info("Updated instrument details from market info",
-                 "base", client.instrument.BaseCurrency,
-                 "quote", client.instrument.QuoteCurrency,
-                 "min_qty_scaled", client.instrument.MinLotSize.Load(),
-             )
-         } else {
-             client.logger.Warn("Market info fetched but not found for configured symbol after fetching.")
-         }
     }
 
+    // Update instrument details if market info is available
+    info := client.getMarketInfo(cfg.Symbol)
+    if info != nil {
+        client.instrument.BaseCurrency = types.Currency(info.BaseCoin)
+        client.instrument.QuoteCurrency = types.Currency(info.QuoteCoin)
+        minQtyFloat, _ := info.MinQuantity.Mul(decimal.NewFromInt(1e6)).Float64()
+        minQtyScaled := uint64(math.Round(minQtyFloat))
+        client.instrument.MinLotSize.Store(minQtyScaled)
+        client.logger.Info("Updated instrument details from market info",
+            "base", client.instrument.BaseCurrency,
+            "quote", client.instrument.QuoteCurrency,
+            "min_qty_scaled", client.instrument.MinLotSize.Load(),
+        )
+    } else {
+        client.logger.Warn("No market info available; instrument details not updated", "symbol", cfg.Symbol)
+    }
 
-	return client, nil
+    client.logger.Info("Bybit trading client initialized successfully")
+    return client, nil
 }
 
 // --- Dummy Data Feed Methods to satisfy ExchangeClient interface ---
@@ -177,143 +189,228 @@ func (c *TradingClient) GetExchangeType() types.ExchangeType {
 // fetchMarketInfo retrieves market details from Bybit REST API.
 // Uses the public endpoint /v5/market/instruments-info.
 // Accepts tradingCategory as a parameter.
+// internal/exchange/bybit/trading_client.go
+
+// ... (previous imports and structs)
+
+// fetchMarketInfo retrieves market details from Bybit REST API.
+// Uses the public endpoint /v5/market/instruments-info.
+// Accepts tradingCategory as a parameter.
 func (c *TradingClient) fetchMarketInfo(ctx context.Context, symbol string, category string) error {
-    if c.cfg.TradingURL == "" { // Use cfg
+    c.logger.Debug("fetchMarketInfo: Start", "symbol", symbol, "category", category)
+
+    if c.cfg.TradingURL == "" {
+        c.logger.Error("fetchMarketInfo: Trading URL not configured")
         return errors.New("Bybit Trading URL not configured, cannot fetch market info")
     }
 
-    // Endpoint: GET /v5/market/instruments-info
-    // Category is required, e.g., "linear", "inverse", "spot"
-    // category is passed as a parameter
-
     endpoint := "/v5/market/instruments-info"
-    requestURL := c.cfg.TradingURL + endpoint // Renamed variable from 'url' to 'requestURL'
+    requestURL := c.cfg.TradingURL + endpoint
 
-    // Query parameters
-    params := url.Values{} // Ensure url.Values is correctly recognized from net/url import
+    c.logger.Debug("fetchMarketInfo: Constructed URL", "url", requestURL)
+
+    params := url.Values{}
     params.Add("category", category)
     if symbol != "" {
-        params.Add("symbol", symbol) // Fetch info for a specific symbol
+        params.Add("symbol", symbol)
     }
 
-    fullURLStr := requestURL + "?" + params.Encode() // Renamed variable from 'fullURL'
+    fullURLStr := requestURL + "?" + params.Encode()
+    c.logger.Debug("fetchMarketInfo: Full URL with params", "full_url", fullURLStr)
 
-    // Create the HTTP request (no signing needed for this public endpoint)
-    req, err := http.NewRequestWithContext(ctx, "GET", fullURLStr, nil) // Use fullURLStr
-    if err != nil {
-        c.logger.Error("Failed to create fetch market info HTTP request", "error", err)
-        return fmt.Errorf("failed to create HTTP request: %w", err)
-    }
+    // Retry logic: attempt up to 2 times
+    const maxRetries = 1
+    for attempt := 0; attempt <= maxRetries; attempt++ {
+        // Create a timeout context for the request
+        reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+        defer cancel()
 
-    resp, err := c.httpClient.Do(req)
-    if err != nil {
-        c.logger.Error("Fetch market info HTTP request failed", "error", err)
-        return fmt.Errorf("Bybit API request failed: %w", err)
-    }
-    defer resp.Body.Close()
-
-    bodyBytes, err := io.ReadAll(resp.Body)
-    if err != nil {
-        c.logger.Error("Failed to read fetch market info response body", "error", err)
-        return fmt.Errorf("failed to read API response body: %w", err)
-    }
-
-     if resp.StatusCode != http.StatusOK {
-        c.logger.Error("Bybit API returned non-OK status for market info", "status", resp.StatusCode, "body", string(bodyBytes))
-        // Attempt to parse as common API response to get retCode/retMsg
-        var commonResp BybitAPIResponse // Assumes BybitAPIResponse is in messages.go
-         if jsonErr := json.Unmarshal(bodyBytes, &commonResp); jsonErr == nil {
-             return fmt.Errorf("Bybit API returned status %d: %s (RetCode %d)", resp.StatusCode, commonResp.RetMsg, commonResp.RetCode)
-         }
-        return fmt.Errorf("Bybit API returned status %d, failed to parse body", resp.StatusCode)
-    }
-
-
-    // Parse the successful response
-    // Declare apiResp using the struct from messages.go
-    var apiResp BybitInstrumentsInfoResponse // Assuming you define this struct in messages.go
-    if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
-        c.logger.Error("Failed to unmarshal fetch market info response", "error", err, "body", string(bodyBytes))
-        return fmt.Errorf("failed to parse API response: %w", err)
-    }
-
-     if !apiResp.IsSuccess() { // Use IsSuccess method from BybitInstrumentsInfoResponse
-        c.logger.Error("Bybit API returned error for fetch market info", "api_error", apiResp.Error()) // Use Error method
-        return fmt.Errorf("Bybit API error: %w", apiResp)
-    }
-
-    // Store the relevant market info
-    c.marketInfoMu.Lock()
-    defer c.marketInfoMu.Unlock()
-
-   
-    // This loop iterates through the list from the API response (apiResp.Result.List)
-    for _, item := range apiResp.Result.List {
-        // Parse decimal string fields
-        minQty, err := decimal.NewFromString(item.LotSizeFilter.MinQuantity)
-        if err != nil { c.logger.Warn("Failed to parse minOrderQty", "error", err, "symbol", item.Symbol); continue }
-        maxQty, err := decimal.NewFromString(item.LotSizeFilter.MaxQuantity) // FIXED: Changed MaxOrderQty to MaxQuantity
-        if err != nil { c.logger.Warn("Failed to parse maxOrderQty", "error", err, "symbol", item.Symbol); continue }
-        qtyStep, err := decimal.NewFromString(item.LotSizeFilter.QuantityStep)
-        if err != nil { c.logger.Warn("Failed to parse qtyStep", "error", err, "symbol", item.Symbol); continue }
-        minPrice, err := decimal.NewFromString(item.PriceFilter.MinPrice)
-        if err != nil { c.logger.Warn("Failed to parse minPrice", "error", err, "symbol", item.Symbol); continue }
-        maxPrice, err := decimal.NewFromString(item.PriceFilter.MaxPrice)
-        if err != nil { c.logger.Warn("Failed to parse maxPrice", "error", err, "symbol", item.Symbol); continue }
-        tickSize, err := decimal.NewFromString(item.PriceFilter.TickSize)
-        if err != nil { c.logger.Warn("Failed to parse tickSize", "error", err, "symbol", item.Symbol); continue }
-
-        // Determine PriceScale (number of decimals) from TickSize or PriceFilter rules
-        // If TickSize is 0.0001, PriceScale is 4. If TickSize is 0.5, PriceScale is 1.
-        // Count decimal places in tick size string representation.
-        priceScale := 0
-        tickSizeStr := tickSize.String()
-        if strings.Contains(tickSizeStr, ".") {
-             priceScale = len(strings.Split(tickSizeStr, ".")[1])
+        req, err := http.NewRequestWithContext(reqCtx, "GET", fullURLStr, nil)
+        if err != nil {
+            c.logger.Error("fetchMarketInfo: Failed to create HTTP request", "error", err, "attempt", attempt+1)
+            return fmt.Errorf("failed to create HTTP request: %w", err)
         }
 
+        c.logger.Debug("fetchMarketInfo: Preparing to send HTTP request...", "method", req.Method, "url", req.URL, "attempt", attempt+1)
 
-         // Determine QuantityScale (number of decimals) from QtyStep or LotSizeFilter rules
-        quantityScale := 0
-        qtyStepStr := qtyStep.String()
-         if strings.Contains(qtyStepStr, ".") {
-             quantityScale = len(strings.Split(qtyStepStr, ".")[1])
-         }
+        // Panic recovery
+        var resp *http.Response
+        func() {
+            defer func() {
+                if r := recover(); r != nil {
+                    c.logger.Error("fetchMarketInfo: Panic during HTTP request")
+                }
+            }()
+            resp, err = c.httpClient.Do(req)
+        }()
 
-        // Corrected struct literal to match BybitMarketInfo fields and use NAMED nested struct types
-        c.marketInfo[item.Symbol] = &BybitMarketInfo{
-            Symbol: item.Symbol,
-            Status: item.Status,
-            BaseCoin: item.BaseCoin,
-            QuoteCoin: item.QuoteCoin,
-            PriceScale: priceScale, // Store derived scale
-            QuantityScale: quantityScale, // Store derived scale
-            MinQuantity: minQty, // Store parsed decimals
-            MaxQuantity: maxQty, // Store parsed decimals
-            PriceFilter: BybitPriceFilter{MinPrice: minPrice, MaxPrice: maxPrice, TickSize: tickSize}, // Use named type
-            LotSizeFilter: BybitLotSizeFilter{MinQuantity: minQty, MaxQuantity: maxQty, QuantityStep: qtyStep}, // Use named type
+        c.logger.Debug("fetchMarketInfo: httpClient.Do call completed.", "err", err, "attempt", attempt+1)
+
+        if err != nil {
+            c.logger.Error("fetchMarketInfo: HTTP request failed", "error", err, "attempt", attempt+1)
+            if attempt < maxRetries && (errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timeout")) {
+                c.logger.Info("fetchMarketInfo: Retrying due to timeout", "attempt", attempt+1)
+                time.Sleep(time.Second * time.Duration(attempt+1)) // Backoff
+                continue
+            }
+            return fmt.Errorf("Bybit API request failed after %d attempts: %w", attempt+1, err)
         }
-        if item.Symbol == symbol {
-            
-            c.logger.Info("Found market info for configured symbol", "symbol", symbol, "status", item.Status)
+
+        // Ensure resp is not nil before accessing
+        if resp == nil {
+            c.logger.Error("fetchMarketInfo: HTTP response is nil", "attempt", attempt+1)
+            if attempt < maxRetries {
+                c.logger.Info("fetchMarketInfo: Retrying due to nil response", "attempt", attempt+1)
+                time.Sleep(time.Second * time.Duration(attempt+1))
+                continue
+            }
+            return fmt.Errorf("Bybit API returned nil response after %d attempts", attempt+1)
         }
+
+        c.logger.Debug("fetchMarketInfo: Received HTTP response", "status", resp.StatusCode, "status_text", http.StatusText(resp.StatusCode), "attempt", attempt+1)
+        defer resp.Body.Close()
+
+        bodyBytes, err := io.ReadAll(resp.Body)
+        c.logger.Debug("fetchMarketInfo: After io.ReadAll", "err", err, "len", len(bodyBytes), "body_preview", string(bodyBytes))
+        if err != nil {
+            c.logger.Error("fetchMarketInfo: Failed to read response body", "error", err, "attempt", attempt+1)
+            if attempt < maxRetries {
+                c.logger.Info("fetchMarketInfo: Retrying due to read error", "attempt", attempt+1)
+                time.Sleep(time.Second * time.Duration(attempt+1))
+                continue
+            }
+            return fmt.Errorf("failed to read API response body after %d attempts: %w", attempt+1, err)
+        }
+
+        if resp.StatusCode != http.StatusOK {
+            c.logger.Error("fetchMarketInfo: Bybit API returned non-OK status", "status", resp.StatusCode, "body", string(bodyBytes), "attempt", attempt+1)
+            var commonResp BybitAPIResponse
+            if jsonErr := json.Unmarshal(bodyBytes, &commonResp); jsonErr == nil {
+                c.logger.Error("fetchMarketInfo: Parsed API error response", "ret_code", commonResp.RetCode, "ret_msg", commonResp.RetMsg, "attempt", attempt+1)
+                return fmt.Errorf("Bybit API returned status %d: %s (RetCode %d)", resp.StatusCode, commonResp.RetMsg, commonResp.RetCode)
+            }
+            c.logger.Error("fetchMarketInfo: Failed to parse non-OK API response body", "attempt", attempt+1)
+            return fmt.Errorf("Bybit API returned status %d, failed to parse body", resp.StatusCode)
+        }
+
+        c.logger.Debug("fetchMarketInfo: Parsing successful response", "attempt", attempt+1)
+        var apiResp BybitInstrumentsInfoResponse
+        jsonErr := json.Unmarshal(bodyBytes, &apiResp)
+        c.logger.Debug("fetchMarketInfo: After json.Unmarshal", "err", jsonErr, "attempt", attempt+1)
+        if jsonErr != nil {
+            c.logger.Error("fetchMarketInfo: Failed to unmarshal successful response", "error", jsonErr, "body", string(bodyBytes), "attempt", attempt+1)
+            return fmt.Errorf("failed to parse API response: %w", jsonErr)
+        }
+        c.logger.Debug("fetchMarketInfo: Successfully unmarshaled response", "attempt", attempt+1)
+
+        if !apiResp.IsSuccess() {
+            c.logger.Error("fetchMarketInfo: Bybit API returned error after unmarshal", "api_error", apiResp.Error(), "attempt", attempt+1)
+            return fmt.Errorf("Bybit API error: %w", apiResp.Error())
+        }
+
+        c.logger.Debug("fetchMarketInfo: API response indicates success. Processing list.", "attempt", attempt+1)
+
+        // Store the relevant market info
+        c.marketInfoMu.Lock()
+        defer c.marketInfoMu.Unlock()
+
+        foundSymbol := false
+        for i, item := range apiResp.Result.List {
+            c.logger.Debug("fetchMarketInfo: Processing item in list", "index", i, "symbol", item.Symbol, "attempt", attempt+1)
+
+            minQty, err := decimal.NewFromString(item.LotSizeFilter.MinQuantity)
+            if err != nil {
+                c.logger.Warn("fetchMarketInfo: Failed to parse minOrderQty", "error", err, "symbol", item.Symbol, "attempt", attempt+1)
+                continue
+            }
+            maxQty, err := decimal.NewFromString(item.LotSizeFilter.MaxQuantity)
+            if err != nil {
+                c.logger.Warn("fetchMarketInfo: Failed to parse maxOrderQty", "error", err, "symbol", item.Symbol, "attempt", attempt+1)
+                continue
+            }
+            qtyStep, err := decimal.NewFromString(item.LotSizeFilter.QuantityStep)
+            if err != nil {
+                c.logger.Warn("fetchMarketInfo: Failed to parse qtyStep", "error", err, "symbol", item.Symbol, "attempt", attempt+1)
+                continue
+            }
+            minPrice, err := decimal.NewFromString(item.PriceFilter.MinPrice)
+            if err != nil {
+                c.logger.Warn("fetchMarketInfo: Failed to parse minPrice", "error", err, "symbol", item.Symbol, "attempt", attempt+1)
+                continue
+            }
+            maxPrice, err := decimal.NewFromString(item.PriceFilter.MaxPrice)
+            if err != nil {
+                c.logger.Warn("fetchMarketInfo: Failed to parse maxPrice", "error", err, "symbol", item.Symbol, "attempt", attempt+1)
+                continue
+            }
+            tickSize, err := decimal.NewFromString(item.PriceFilter.TickSize)
+            if err != nil {
+                c.logger.Warn("fetchMarketInfo: Failed to parse tickSize", "error", err, "symbol", item.Symbol, "attempt", attempt+1)
+                continue
+            }
+
+            priceScale := 0
+            tickSizeStr := tickSize.String()
+            if strings.Contains(tickSizeStr, ".") {
+                priceScale = len(strings.Split(tickSizeStr, ".")[1])
+            }
+            quantityScale := 0
+            qtyStepStr := qtyStep.String()
+            if strings.Contains(qtyStepStr, ".") {
+                quantityScale = len(strings.Split(qtyStepStr, ".")[1])
+            }
+
+            c.logger.Debug("fetchMarketInfo: Parsed decimals and scales",
+                "symbol", item.Symbol,
+                "min_qty", minQty, "max_qty", maxQty, "qty_step", qtyStep,
+                "min_price", minPrice, "max_price", maxPrice, "tick_size", tickSize,
+                "price_scale", priceScale, "quantity_scale", quantityScale,
+                "attempt", attempt+1)
+
+            c.marketInfo[item.Symbol] = &BybitMarketInfo{
+                Symbol:        item.Symbol,
+                Status:        item.Status,
+                BaseCoin:      item.BaseCoin,
+                QuoteCoin:     item.QuoteCoin,
+                PriceScale:    priceScale,
+                QuantityScale: quantityScale,
+                MinQuantity:   minQty,
+                MaxQuantity:   maxQty,
+                PriceFilter:   BybitPriceFilter{MinPrice: minPrice, MaxPrice: maxPrice, TickSize: tickSize},
+                LotSizeFilter: BybitLotSizeFilter{MinQuantity: minQty, MaxQuantity: maxQty, QuantityStep: qtyStep},
+            }
+            c.logger.Debug("fetchMarketInfo: Stored market info for symbol", "symbol", item.Symbol, "attempt", attempt+1)
+
+            if item.Symbol == symbol {
+                foundSymbol = true
+                c.logger.Info("fetchMarketInfo: Found market info for configured symbol", "symbol", symbol, "status", item.Status, "attempt", attempt+1)
+            }
+        }
+
+        c.logger.Debug("fetchMarketInfo: Finished processing list", "attempt", attempt+1)
+
+        if symbol != "" && !foundSymbol {
+            c.logger.Error("fetchMarketInfo: Market info not found for configured symbol in API response", "symbol", symbol, "attempt", attempt+1)
+            return fmt.Errorf("market info not found for symbol %s in API response", symbol)
+        }
+
+        // Validate trading status
+       if symbol != "" {
+    // Access the map directly since we already hold the write lock
+    info, ok := c.marketInfo[symbol]
+    if ok && info.Status != "Trading" {
+        c.logger.Warn("fetchMarketInfo: Market is not in 'Trading' status", 
+            "symbol", symbol, "status", info.Status, "attempt", attempt+1)
     }
-
-    // Validate trading status for the configured symbol
-    if symbol != "" {
-        info := c.getMarketInfo(symbol)
-        if info != nil && info.Status != "Trading" {
-             c.logger.Warn("Market is not in 'Trading' status", "symbol", symbol, "status", info.Status)
-             // Decide if this should be an error or just a warning.
-             // Returning error here would make init fail if market is not trading.
-             // return fmt.Errorf("market %s is not in trading status: %s", symbol, info.Status)
-        }
-    }
-
-    // Ensure a return statement exists at the end of the function's successful path
-    return nil
 }
 
+        c.logger.Debug("fetchMarketInfo: Function completed successfully", "attempt", attempt+1)
+        return nil // Success
+    }
+
+    // Should not reach here, but return error if retries exhausted
+    return fmt.Errorf("fetchMarketInfo: failed after %d attempts", maxRetries+1)
+}
 // getMarketInfo safely retrieves stored market information by symbol.
 func (c *TradingClient) getMarketInfo(symbol string) *BybitMarketInfo {
     c.marketInfoMu.RLock()

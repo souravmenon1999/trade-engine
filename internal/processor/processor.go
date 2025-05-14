@@ -49,11 +49,16 @@ func NewPriceProcessor(ctx context.Context, cfg *config.ProcessorConfig, orderCf
 // calculates target bid/ask prices, and returns types.Order objects if quoting is allowed.
 // It returns the bid Order, ask Order, a boolean indicating if quotes were generated, and an error.
 func (p *PriceProcessor) ProcessOrderbook(ob *types.Orderbook) (*types.Order, *types.Order, bool, error) {
+
+	
+
+
 	if ob == nil || ob.Instrument == nil {
 		return nil, nil, false, fmt.Errorf("invalid orderbook provided")
 	}
 
 	// Calculate mid-price
+	
 	midFloat, midErr := ob.MidPrice()
 	if midErr != nil {
 		return nil, nil, false, types.TradingError{
@@ -65,9 +70,9 @@ func (p *PriceProcessor) ProcessOrderbook(ob *types.Orderbook) (*types.Order, *t
 
 	midScaledUint64 := uint64(midFloat * 1e6)
 
-	p.logger.Debug("Calculated mid-price", "symbol", ob.Instrument.Symbol, "mid_price", midFloat)
+	 p.logger.Debug("Calculated mid-price", "symbol", ob.Instrument.Symbol, "mid_price", midFloat)
 
-	// Check if quoting is allowed based on cooldown
+   // Check if quoting is allowed based on cooldown
 	now := time.Now().UnixNano()
 	lastQuote := p.lastQuoteTime.Load()
 	cooldownSeconds := time.Duration(p.cfg.RequoteCooldown) * time.Second
@@ -75,7 +80,7 @@ func (p *PriceProcessor) ProcessOrderbook(ob *types.Orderbook) (*types.Order, *t
 	if lastQuote != 0 {
 		elapsed := time.Duration(now - lastQuote)
 		if elapsed < cooldownSeconds {
-			p.logger.Debug("Requote cooldown active", "elapsed", elapsed, "cooldown", cooldownSeconds)
+			// p.logger.Debug("Requote cooldown active", "elapsed", elapsed, "cooldown", cooldownSeconds)
 			return nil, nil, false, nil // Cannot quote yet
 		}
 	}

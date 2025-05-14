@@ -1,5 +1,3 @@
-// cmd/bybittrader/main.go
-
 package main
 
 import (
@@ -10,17 +8,17 @@ import (
 	"syscall"
 	"time"
 
+	
 	"github.com/souravmenon1999/trade-engine/internal/config"
-	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit" // Import concrete Bybit clients
+	"github.com/souravmenon1999/trade-engine/internal/exchange/bybit"
 	"github.com/souravmenon1999/trade-engine/internal/logging"
 	"github.com/souravmenon1999/trade-engine/internal/processor"
-	"github.com/souravmenon1999/trade-engine/internal/strategy/bybittrader" // Import Bybit Trader strategy
+	"github.com/souravmenon1999/trade-engine/internal/strategy/bybittrader"
 )
 
 func main() {
 	// Load configuration
-	// This main assumes a config.yaml file is present and structured correctly.
-	cfg, err := config.LoadConfig("configs/bybittrader_config.yaml") // Load the Bybit Trader config
+	cfg, err := config.LoadConfig("configs/bybittrader_config.yaml")
 	if err != nil {
 		fmt.Printf("Failed to load configuration: %v\n", err)
 		os.Exit(1)
@@ -34,107 +32,102 @@ func main() {
 	logger.Debug("Configuration loaded", "config", cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel() // Ensure application context is cancelled on exit
+	defer cancel()
 
-	// --- Initialize Bybit Data Client ---
-	// This client provides the orderbook data feed from Bybit.
-	// FIX: bybit.NewClient returns only ONE value (*Client), not two.
-	bybitDataClient := bybit.NewClient(ctx, &cfg.Bybit) // Assign to one variable
-	// We should ideally check for initialization errors, but based on your client.go
-	// definition, errors are returned by methods like SubscribeOrderbook.
-	logger.Info("Bybit data client initialized.")
+	// Initialize Bybit Trading Client with Retry
+	logger.Debug("Starting Bybit trading client initialization...")
+	var bybitTradingClient *bybit.TradingClient
+	const maxRetries = 5
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		logger.Info("Attempting to initialize Bybit trading client", "attempt", attempt+1)
+		bybitTradingClient, err = bybit.NewTradingClient(ctx, &cfg.Bybit)
+		if err == nil {
+			logger.Info("Bybit trading client initialized successfully")
+			break
+		}
 
-	// Start the orderbook subscription (price data source)
-	// Declare 'err' here for subsequent assignments if not already declared
-	// (If you had other err declarations above, remove 'var' or ':=' as appropriate)
-	// Since we used ':=' for cfg, err above, we reuse err here:
-	err = bybitDataClient.SubscribeOrderbook(ctx, cfg.Bybit.Symbol) // Assign error here
-	if err != nil {
-		logger.Error("Failed to start Bybit orderbook subscription", "error", err)
-		// If the price feed fails, the strategy cannot operate.
-		// Decide if this is a fatal error or if reconnect logic is sufficient.
-		// For now, exit if subscription fails initially.
-		os.Exit(1) // Exit if subscription fails
-	} else {
-		logger.Info("Bybit orderbook subscription initiated.")
+		logger.Error("Failed to initialize Bybit trading client", "error", err, "attempt", attempt+1)
+		if attempt == maxRetries {
+			logger.Error("Max retries reached, unable to initialize trading client")
+		}
+
+		// Exponential backoff: 1s, 2s, 4s, 8s, 16s
+		delay := time.Second * time.Duration(1<<attempt)
+		logger.Info("Retrying after delay", "delay", delay)
+		time.Sleep(delay)
 	}
 
-	// --- Initialize Bybit Trading Client ---
-	// This client handles trading operations via REST API.
-	// It gets necessary config (API keys, URL, Category) from the loaded config.
-	// Remove the separate tradingCategory argument from the call if you put it back.
-	// Ensure NewTradingClient also returns (*TradingClient, error) if you haven't already fixed that.
-	bybitTradingClient, err := bybit.NewTradingClient(ctx, &cfg.Bybit) // This call should return 2 values
-	if err != nil {
-		logger.Error("Failed to initialize Bybit trading client", "error", err)
-		os.Exit(1) // Trading is essential for this bot
-	} else {
-		logger.Info("Bybit trading client initialized.")
+	// Initialize Bybit data client
+	logger.Debug("initializing data client")
+	bybitDataClient := bybit.NewClient(ctx, &cfg.Bybit)
+	logger.Debug("Bybit data client initialized.")
+
+	// Start the orderbook subscription
+	const maxSubRetries = 3
+	for attempt := 0; attempt <= maxSubRetries; attempt++ {
+		logger.Info("Attempting to subscribe to orderbook", "exchange", "bybit", "symbol", cfg.Bybit.Symbol, "attempt", attempt+1)
+		err = bybitDataClient.SubscribeOrderbook(ctx, cfg.Bybit.Symbol)
+		if err == nil {
+			logger.Info("Bybit orderbook subscription initiated.")
+			break
+		}
+
+		logger.Error("Failed to start Bybit orderbook subscription", "error", err, "attempt", attempt+1)
+		if attempt == maxSubRetries {
+			logger.Error("Max retries reached for orderbook subscription")
+		}
+
+		// Exponential backoff: 1s, 2s, 4s
+		delay := time.Second * time.Duration(1<<attempt)
+		logger.Info("Retrying subscription after delay", "delay", delay)
+		time.Sleep(delay)
 	}
 
-	// --- Initialize Price Processor ---
-	// It needs config for spread, cooldown, threshold.
-	// Note: processor.ProcessOrderbook will return orders with Exchange: types.ExchangeInjective
-	// due to the constraint on processor.go. The BybitTradingClient will ignore this.
+	// Initialize Price Processor
 	priceProcessor := processor.NewPriceProcessor(ctx, &cfg.Processor, &cfg.Order)
 	logger.Info("Price Processor initialized.")
 
-	// --- Initialize and Run Bybit Trader Strategy ---
-	// Pass both the data client and the trading client.
-	strategy := bybittrader.NewStrategy(ctx, cfg, bybitDataClient, bybitTradingClient, priceProcessor) // Pass both clients
+	// Initialize and Run Bybit Trader Strategy
+	strategy := bybittrader.NewStrategy(ctx, cfg, bybitDataClient, bybitTradingClient, priceProcessor)
 
-	// Start the strategy's main execution loop in a goroutine
+	// Start the strategy in a goroutine
 	go strategy.Run()
 	logger.Info("Bybit Trader Strategy started in background.")
 
-	// --- Keep the application running ---
-	// Wait for interrupt signal (Ctrl+C or SIGTERM) to gracefully shut down.
+	// Wait for interrupt signal to gracefully shut down
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	<-stop // Block until a signal is received
-
+	<-stop
 	logger.Info("Shutting down gracefully...")
 
-	// --- Clean up resources ---
-	// Cancel the root context. This signals cancellation to all components
-	// created with derived contexts (Strategy, Clients, Processor).
+	// Clean up resources
 	cancel()
-
-	// Give goroutines time to stop after context cancellation.
-	// Use a WaitGroup for more robust shutdown, but a sleep is simpler for demonstration.
 	time.Sleep(time.Millisecond * 500)
 
-	// Close components explicitly in reverse order of dependency where applicable.
-	// Close Strategy first (it uses clients/processor).
-	err = strategy.Close()
-	if err != nil {
+	// Close Strategy
+	if err = strategy.Close(); err != nil {
 		logger.Error("Error during Strategy shutdown", "error", err)
 	} else {
 		logger.Info("Strategy shut down successfully.")
 	}
 
-	// Close Price Processor (no real resources, but good practice).
-	err = priceProcessor.Close()
-	if err != nil {
+	// Close Price Processor
+	if err = priceProcessor.Close(); err != nil {
 		logger.Error("Error during Price Processor shutdown", "error", err)
 	} else {
 		logger.Info("Price Processor shut down successfully.")
 	}
 
-	// Close Bybit Trading Client first (it might have open connections).
-	// Call close on the concrete trading client type
-	err = bybitTradingClient.Close()
-	if err != nil {
+	// Close Bybit Trading Client
+	if err = bybitTradingClient.Close(); err != nil {
 		logger.Error("Error during Bybit trading client shutdown", "error", err)
 	} else {
 		logger.Info("Bybit trading client shut down successfully.")
 	}
 
-	// Close Bybit Data Client last.
-	// Call close on the concrete data client type
-	err = bybitDataClient.Close()
-	if err != nil {
+	// Close Bybit Data Client
+	if err = bybitDataClient.Close(); err != nil {
 		logger.Error("Error during Bybit data client shutdown", "error", err)
 	} else {
 		logger.Info("Bybit data client shut down successfully.")

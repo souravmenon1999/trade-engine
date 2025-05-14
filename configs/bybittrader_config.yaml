@@ -24,9 +24,9 @@ injective:
   gas_price: 0
 
 processor:
-  requote_cooldown: 1 # Minimum seconds between quote updates
+  requote_cooldown: 2 # Minimum seconds between quote updates
   requote_threshold: 0 # Percentage price change required to requote (0.1 = 0.1%)
 
 order:
   quantity: 0.01 # Base quantity for quotes (e.g., 0.01 ETH)
-  spread_pct: 0.05 # Desired spread percentage (e.0.05 = 0.05%)
+  spread_pct: 50 # Desired spread percentage (e.0.05 = 0.05%)
