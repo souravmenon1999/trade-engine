@@ -1,0 +1,7 @@
+bybit:
+  ws_url: "wss://stream.bybit.com/v5/public/linear"
+  symbol: "ETHUSDT"
+
+order:
+  quantity: 1
+
