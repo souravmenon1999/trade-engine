@@ -16,6 +16,11 @@ type InjectiveTradeClient struct {
 	tmClient       *rpchttp.HTTP
 }
 
+// GetExchangeClient returns the exchange client for use in other packages.
+func (c *InjectiveTradeClient) GetExchangeClient() exchange.ExchangeClient {
+    return c.exchangeClient
+}
+
 // NewInjectiveTradeClient initializes a trading client using a private key.
 func NewInjectiveTradeClient(networkName, lb, privKey string) (*InjectiveTradeClient, error) {
 	network := common.LoadNetwork(networkName, lb)
@@ -26,13 +31,13 @@ func NewInjectiveTradeClient(networkName, lb, privKey string) (*InjectiveTradeCl
 
 	// Use private key only, no keyring
 	senderAddress, cosmosKeyring, err := chainclient.InitCosmosKeyring(
-		"",        // keyringHome
-		"",        // backend
-		"",        // keyringName
-		"",        // password
-		privKey,   // private key
-		"inj",     // account prefix
-		false,     // useLedger
+	 "",             // No directory for memory backend
+        "injective",    // App name
+        "memory",       // Use in-memory backend
+        "default",      // User name (arbitrary)
+        "",             // No password for memory backend
+        privKey, // Private key from config
+        false,  
 	)
 	if err != nil {
 		return nil, err

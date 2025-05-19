@@ -24,10 +24,11 @@ type OrderConfig struct {
 }
 
 type InjectiveExchangeConfig struct {
-	NetworkName string `mapstructure:"network_name"`
-	Lb          string `mapstructure:"lb"`
-	PrivKey     string `mapstructure:"priv_key"`
-	MarketId    string `mapstructure:"market_id"`
+	NetworkName   string `mapstructure:"network_name"`
+	Lb            string `mapstructure:"lb"`
+	PrivKey       string `mapstructure:"priv_key"`
+	MarketId      string `mapstructure:"market_id"`
+	SubaccountId  string `mapstructure:"subaccount_id"` // New field added
 }
 
 func LoadConfig(configPath string) (*Config, error) {
