@@ -1,4 +1,3 @@
-// config/config.go
 package config
 
 import (
@@ -8,13 +7,15 @@ import (
 )
 
 type Config struct {
-	Bybit BybitConfig `mapstructure:"bybit"`
-	Order OrderConfig `mapstructure:"order"`
+	BybitOrderbook BybitOrderbookConfig `mapstructure:"bybitOrderbook"`
+	Order          OrderConfig          `mapstructure:"order"`
 }
 
-type BybitConfig struct {
-	WSUrl  string `mapstructure:"ws_url"`
-	Symbol string `mapstructure:"symbol"`
+type BybitOrderbookConfig struct {
+	WSUrl         string `mapstructure:"ws_url"`
+	Symbol        string `mapstructure:"symbol"`
+	BaseCurrency  string `mapstructure:"base_currency"`
+	QuoteCurrency string `mapstructure:"quote_currency"`
 }
 
 type OrderConfig struct {
@@ -35,4 +36,3 @@ func LoadConfig(configPath string) (*Config, error) {
 	log.Printf("Config loaded: %+v", cfg)
 	return &cfg, nil
 }
-

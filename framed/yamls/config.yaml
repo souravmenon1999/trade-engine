@@ -1,7 +1,8 @@
-bybit:
+bybitOrderbook:
   ws_url: "wss://stream.bybit.com/v5/public/linear"
   symbol: "ETHUSDT"
+  base_currency: "ETH"
+  quote_currency: "USDT"
 
 order:
   quantity: 1
-
