@@ -2,18 +2,19 @@ package main
 
 import (
 	"flag"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/cometbft/cometbft/types"
+	tmtypes "github.com/cometbft/cometbft/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/souravmenon1999/trade-engine/framed/config"
 	"github.com/souravmenon1999/trade-engine/framed/injective"
 	"github.com/souravmenon1999/trade-engine/framed/processor/bybitorderbook"
 	"github.com/souravmenon1999/trade-engine/framed/types"
-	bybitws "github.com/souravmenon1999/trade-engine/framed/websockets/bybit"
+	bybitws "github.com/souravmenon1999/trade-engine/framed/websockets/bybitws"
 )
 
 func main() {
@@ -34,7 +35,7 @@ func main() {
 	defer bybitOrderbookWSClient.Close()
 
 	processedDataChannel := make(chan *types.OrderBookWithVWAP, 10)
-	injectiveUpdatesChannel := make(chan types.EventData, 10)
+	injectiveUpdatesChannel := make(chan tmtypes.EventData, 10)
 
 	instrument := &types.Instrument{
 		BaseCurrency:  cfg.BybitOrderbook.BaseCurrency,
