@@ -4,6 +4,11 @@ bybitOrderbook:
   base_currency: "ETH"
   quote_currency: "USDT"
 
+bybitExchangeClient:
+  ws_url: "wss://stream.bybit.com/v5/private"
+  api_key: "your_bybit_api_key"      # Replace with your Bybit API key
+  api_secret: "your_bybit_api_secret" # Replace with your Bybit API secret
+
 order:
   quantity: 1
 
@@ -12,4 +17,4 @@ injectiveExchange:
   lb: "lb"
   priv_key: "e727b7f540777fe9c146ee3177677fc2dac1c46131ba5bf8a977f19c662d6c8b"
   market_id: "0x54d4505adef6a5cef26bc403a33d595620ded4e15b9e2bc3dd489b714813366a"
-  subaccount_id: "0x18ac3db194e0f45fb4652766647e44c3388484ec000000000000000000000000"  # Replace with your actual subaccount ID
+  subaccount_id: "0xc6fe5d33615a1c52c08018c47e8bc53646a0e101000000000000000000000000"

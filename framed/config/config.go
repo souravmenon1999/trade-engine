@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	BybitOrderbook      *BybitOrderbookConfig      `mapstructure:"bybitOrderbook"`
+	BybitExchangeClient *BybitExchangeClientConfig `mapstructure:"bybitExchangeClient"`
 	Order               *OrderConfig               `mapstructure:"order"`
 	InjectiveExchange   *InjectiveExchangeConfig   `mapstructure:"injectiveExchange"`
 }
@@ -19,6 +20,12 @@ type BybitOrderbookConfig struct {
 	QuoteCurrency string `mapstructure:"quote_currency"`
 }
 
+type BybitExchangeClientConfig struct {
+	WSUrl     string `mapstructure:"ws_url"`
+	APIKey    string `mapstructure:"api_key"`
+	APISecret string `mapstructure:"api_secret"`
+}
+
 type OrderConfig struct {
 	Quantity int64 `mapstructure:"quantity"`
 }
@@ -28,7 +35,7 @@ type InjectiveExchangeConfig struct {
 	Lb            string `mapstructure:"lb"`
 	PrivKey       string `mapstructure:"priv_key"`
 	MarketId      string `mapstructure:"market_id"`
-	SubaccountId  string `mapstructure:"subaccount_id"` // New field added
+	SubaccountId  string `mapstructure:"subaccount_id"`
 }
 
 func LoadConfig(configPath string) (*Config, error) {
