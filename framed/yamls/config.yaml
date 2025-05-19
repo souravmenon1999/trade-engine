@@ -10,5 +10,5 @@ order:
 injectiveExchange:
   network_name: "testnet"
   lb: "lb"
-  priv_key: "5d386fbdbf11f1141010f81a46b40f94887367562bd33b452bbaa6ce1cd1381e"
+  priv_key: "e727b7f540777fe9c146ee3177677fc2dac1c46131ba5bf8a977f19c662d6c8b"
   market_id: "0x54d4505adef6a5cef26bc403a33d595620ded4e15b9e2bc3dd489b714813366a"

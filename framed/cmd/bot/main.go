@@ -61,7 +61,7 @@ func main() {
 	}
 
 	// Initialize Injective Updates Client
-	updatesClient, err := injective.InitUpdatesClient("wss://tm.injective.testnet.network/websocket")
+	updatesClient, err := injective.InitUpdatesClient("https://tm.injective.testnet.network")
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize Injective updates client")
 	}

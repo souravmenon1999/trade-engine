@@ -11,8 +11,8 @@ import (
 
 // InjectiveTradeClient handles trading operations on Injective (Helix).
 type InjectiveTradeClient struct {
-	chainClient    *chain.ChainClient
-	exchangeClient *exchange.ExchangeClient
+	chainClient    chain.ChainClient
+	exchangeClient exchange.ExchangeClient
 	tmClient       *rpchttp.HTTP
 }
 
@@ -24,13 +24,15 @@ func NewInjectiveTradeClient(networkName, lb, privKey string) (*InjectiveTradeCl
 		return nil, err
 	}
 
+	// Use private key only, no keyring
 	senderAddress, cosmosKeyring, err := chainclient.InitCosmosKeyring(
-		"", // No keyring home, using private key only
-		"", // No backend
-		"", // No keyring name
-		"", // No password
-		privKey,
-		false,
+		"",        // keyringHome
+		"",        // backend
+		"",        // keyringName
+		"",        // password
+		privKey,   // private key
+		"inj",     // account prefix
+		false,     // useLedger
 	)
 	if err != nil {
 		return nil, err
@@ -55,7 +57,7 @@ func NewInjectiveTradeClient(networkName, lb, privKey string) (*InjectiveTradeCl
 		return nil, err
 	}
 
-	exchangeClient, err := exchangeclient.NewExchangeClient(network)
+	exchangeClient, err := exchange.NewExchangeClient(network)
 	if err != nil {
 		return nil, err
 	}
