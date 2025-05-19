@@ -12,6 +12,7 @@ import (
 	"github.com/souravmenon1999/trade-engine/framed/config"
 	"github.com/souravmenon1999/trade-engine/framed/injective"
 	"github.com/souravmenon1999/trade-engine/framed/processor/bybitorderbook"
+	type "github.com/souravmenon1999/trade-engine/framed/types"
 	bybitws "github.com/souravmenon1999/trade-engine/framed/websockets/bybit"
 )
 
@@ -32,13 +33,13 @@ func main() {
 	}
 	defer bybitOrderbookWSClient.Close()
 
-	processedDataChannel := make(chan *types.OrderBookWithVWAP, 10)
-	injectiveUpdatesChannel := make(chan types.EventData, 10)
+	processedDataChannel := make(chan *type.OrderBookWithVWAP, 10)
+	injectiveUpdatesChannel := make(chan type.EventData, 10)
 
-	instrument := &types.Instrument{
+	instrument := &type.Instrument{
 		BaseCurrency:  cfg.BybitOrderbook.BaseCurrency,
 		QuoteCurrency: cfg.BybitOrderbook.QuoteCurrency,
-		MinLotSize:    types.Quantity(100000),
+		MinLotSize:    type.Quantity(100000),
 		ContractType:  "Perpetual",
 	}
 
