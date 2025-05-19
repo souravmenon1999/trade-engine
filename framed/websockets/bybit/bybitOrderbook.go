@@ -1,4 +1,4 @@
-package bybit
+package bybitws
 
 import (
 	"log"
@@ -11,7 +11,7 @@ type BybitOrderBookWSClient struct {
 	conn         *websocket.Conn
 	url          string
 	RawMessageCh chan []byte
-	topic        string // Store topic for resubscription
+	topic        string
 }
 
 func NewBybitOrderBookWSClient(url string) *BybitOrderBookWSClient {
@@ -65,7 +65,6 @@ func (c *BybitOrderBookWSClient) readMessages() {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			log.Printf("Read message error: %v", err)
-			// Attempt reconnect
 			c.reconnect()
 			return
 		}
@@ -81,7 +80,6 @@ func (c *BybitOrderBookWSClient) reconnect() {
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		// Re-subscribe to the topic
 		if c.topic != "" {
 			if err := c.Subscribe(c.topic); err != nil {
 				log.Printf("Re-subscribe failed: %v", err)

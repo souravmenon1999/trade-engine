@@ -1,4 +1,4 @@
-package vwap
+package bybitorderbook
 
 import (
 	"encoding/json"
@@ -11,8 +11,8 @@ import (
 type BybitVWAPProcessor struct {
 	RawMessageCh    <-chan []byte
 	ProcessedDataCh chan *types.OrderBookWithVWAP
-	orderBookState  *types.OrderBook // Pointer to share and modify orderbook state
-	symbol          string           // Value, as it's immutable and small
+	orderBookState  *types.OrderBook
+	symbol          string
 }
 
 func NewBybitVWAPProcessor(rawMsgCh <-chan []byte, processedCh chan *types.OrderBookWithVWAP, symbol string, instrument *types.Instrument) *BybitVWAPProcessor {
@@ -23,7 +23,7 @@ func NewBybitVWAPProcessor(rawMsgCh <-chan []byte, processedCh chan *types.Order
 		orderBookState: &types.OrderBook{
 			Asks:       make(map[types.Price]types.Quantity),
 			Bids:       make(map[types.Price]types.Quantity),
-			Instrument: instrument, // Pointer, shared with main
+			Instrument: instrument,
 		},
 	}
 }
@@ -35,8 +35,8 @@ func (p *BybitVWAPProcessor) StartProcessing() {
 			if p.orderBookState.Sequence > 0 {
 				vwap := p.calculateVWAP()
 				processedData := &types.OrderBookWithVWAP{
-					OrderBook: p.orderBookState, // Pointer to share state
-					VWAP:      vwap,             // Value, as Price is small
+					OrderBook: p.orderBookState,
+					VWAP:      vwap,
 				}
 				p.ProcessedDataCh <- processedData
 			}
@@ -69,8 +69,8 @@ func (p *BybitVWAPProcessor) processAndApplyMessage(rawMessage []byte) {
 		return
 	}
 
-	p.orderBookState.mu.Lock()
-	defer p.orderBookState.mu.Unlock()
+	p.orderBookState.Mu.Lock()
+	defer p.orderBookState.Mu.Unlock()
 
 	switch bybitMsg.Type {
 	case "snapshot":
@@ -135,8 +135,8 @@ func (p *BybitVWAPProcessor) applyUpdates(updates [][]string, orderBookMap map[t
 }
 
 func (p *BybitVWAPProcessor) calculateVWAP() types.Price {
-	p.orderBookState.mu.RLock()
-	defer p.orderBookState.mu.RUnlock()
+	p.orderBookState.Mu.RLock()
+	defer p.orderBookState.Mu.RUnlock()
 
 	var sumPQ, sumQ int64
 	for price, qty := range p.orderBookState.Bids {

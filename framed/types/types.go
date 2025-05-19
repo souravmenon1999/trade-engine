@@ -17,8 +17,8 @@ type OrderBook struct {
 	Asks           map[Price]Quantity
 	Bids           map[Price]Quantity
 	LastUpdateTime uint64
-	Sequence       uint64 // Modified via orderBookState pointer
-	mu             sync.RWMutex
+	Sequence       uint64
+	Mu             sync.RWMutex
 }
 
 type OrderBookWithVWAP struct {
