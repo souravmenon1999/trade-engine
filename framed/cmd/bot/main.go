@@ -27,13 +27,15 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to load config")
 	}
 
+	// Initialize Bybit orderbook client
 	bybitOrderbookClient := bybitws.NewBybitExchangeClient(cfg.BybitOrderbook.WSUrl, "", "")
 	if err := bybitOrderbookClient.Connect(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to Bybit orderbook WebSocket")
 	}
-	bybitOrderbookClient.StartReading()
+	go bybitOrderbookClient.StartReading() // Run in a goroutine
 	log.Info().Msg("Bybit orderbook client connection established successfully")
 
+	// Initialize Bybit trading client
 	bybitTradeClient, err := bybit.InitTradeClient(
 		cfg.BybitExchangeClient.WSUrl,
 		cfg.BybitExchangeClient.APIKey,
@@ -44,6 +46,7 @@ func main() {
 	}
 	log.Info().Msg("Bybit trading client connection established successfully")
 
+	// Initialize Bybit updates client
 	bybitUpdatesClient, err := bybit.InitUpdatesClient(
 		cfg.BybitExchangeClient.WSUrl,
 		cfg.BybitExchangeClient.APIKey,
@@ -54,6 +57,7 @@ func main() {
 	}
 	log.Info().Msg("Bybit updates client connection established successfully")
 
+	// Initialize Injective trade client and use it to avoid "declared and not used"
 	injectiveTradeClient, err := injective.InitTradeClient(
 		cfg.InjectiveExchange.NetworkName,
 		cfg.InjectiveExchange.Lb,
@@ -62,18 +66,15 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize Injective trade client")
 	}
+	_ = injectiveTradeClient // Temporary usage; replace with actual logic if needed
 	log.Info().Msg("Injective trade client connection established successfully")
-
-	// Commented out unused variable
-	// injectiveUpdatesClient := injective.InitUpdatesClient(injectiveTradeClient.GetExchangeClient())
-	// log.Info().Msg("Injective updates client initialized successfully")
 
 	processedDataChannel := make(chan *types.OrderBookWithVWAP, 10)
 
 	instrument := &types.Instrument{
 		BaseCurrency:  cfg.BybitOrderbook.BaseCurrency,
 		QuoteCurrency: cfg.BybitOrderbook.QuoteCurrency,
-		MinLotSize:    types.Quantity(100000),
+		MinLotSize:    types.NewQuantity(100000),
 		ContractType:  "Perpetual",
 	}
 
@@ -92,9 +93,10 @@ func main() {
 		for data := range processedDataChannel {
 			ob := data.OrderBook
 			vwap := data.VWAP
-			log.Info().Int64("vwap", int64(vwap)).Msg("Calculated VWAP")
+			log.Info().Int64("vwap", vwap.Load()).Msg("Calculated VWAP")
 			_ = ob
 		}
+		log.Info().Msg("Main processing goroutine finished")
 	}()
 
 	defer bybitOrderbookClient.Close()

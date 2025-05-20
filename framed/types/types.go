@@ -1,27 +1,51 @@
 package types
 
-import "sync"
+import (
+    "sync/atomic"
+)
 
-type Price int64
-type Quantity int64
+// Price is a struct embedding atomic.Int64 for thread-safe price values.
+type Price struct {
+    atomic.Int64
+}
 
+// Quantity is a struct embedding atomic.Int64 for thread-safe quantity values.
+type Quantity struct {
+    atomic.Int64
+}
+
+// NewPrice creates a new Price with an initial value and returns a pointer.
+func NewPrice(val int64) *Price {
+    p := &Price{}
+    p.Store(val)
+    return p
+}
+
+// NewQuantity creates a new Quantity with an initial value and returns a pointer.
+func NewQuantity(val int64) *Quantity {
+    q := &Quantity{}
+    q.Store(val)
+    return q
+}
+
+// Instrument represents a trading instrument.
 type Instrument struct {
-	BaseCurrency  string
-	QuoteCurrency string
-	MinLotSize    Quantity
-	ContractType  string
+    BaseCurrency  string
+    QuoteCurrency string
+    MinLotSize    *Quantity 
+    ContractType  string
 }
 
 type OrderBook struct {
-	Instrument     *Instrument
-	Asks           map[Price]Quantity
-	Bids           map[Price]Quantity
-	LastUpdateTime uint64
-	Sequence       uint64
-	Mu             sync.RWMutex
+    Instrument     *Instrument
+    Asks           map[*Price]*Quantity 
+    Bids           map[*Price]*Quantity 
+    LastUpdateTime atomic.Int64
+    Sequence       atomic.Int64
 }
 
+// OrderBookWithVWAP combines an order book with its VWAP.
 type OrderBookWithVWAP struct {
-	OrderBook *OrderBook
-	VWAP      Price
+    OrderBook *OrderBook
+    VWAP      *Price 
 }

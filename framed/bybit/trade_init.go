@@ -19,3 +19,8 @@ func InitTradeClient(wsURL, apiKey, apiSecret string) (*BybitTradeClient, error)
 		wsClient: wsClient,
 	}, nil
 }
+
+// Close shuts down the trading client's WebSocket connection.
+func (c *BybitTradeClient) Close() {
+	c.wsClient.Close()
+}

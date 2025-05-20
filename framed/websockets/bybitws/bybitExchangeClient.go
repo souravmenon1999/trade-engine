@@ -4,7 +4,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -12,18 +16,23 @@ import (
 
 // BybitExchangeClient manages a WebSocket connection to Bybit for trading and updates.
 type BybitExchangeClient struct {
-	conn      *websocket.Conn
-	url       string
-	apiKey    string
-	apiSecret string
+	conn          *websocket.Conn
+	url           string
+	apiKey        string
+	apiSecret     string
+	OrderBookCh   chan []byte // Channel for orderbook updates
+	OrderUpdateCh chan []byte // Channel for order updates
+	mu            sync.Mutex  // For thread-safe operations
 }
 
 // NewBybitExchangeClient initializes a new Bybit WebSocket client.
 func NewBybitExchangeClient(url, apiKey, apiSecret string) *BybitExchangeClient {
 	return &BybitExchangeClient{
-		url:       url,
-		apiKey:    apiKey,
-		apiSecret: apiSecret,
+		url:           url,
+		apiKey:        apiKey,
+		apiSecret:     apiSecret,
+		OrderBookCh:   make(chan []byte, 100),
+		OrderUpdateCh: make(chan []byte, 100),
 	}
 }
 
@@ -63,9 +72,57 @@ func (c *BybitExchangeClient) generateSignature(timestamp int64) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// Close shuts down the WebSocket connection.
+// StartReading starts reading messages from the WebSocket and dispatches them to channels.
+func (c *BybitExchangeClient) StartReading() {
+	go func() {
+		for {
+			_, message, err := c.conn.ReadMessage()
+			if err != nil {
+				log.Printf("Error reading message: %v", err)
+				return
+			}
+			var msg map[string]interface{}
+			if err := json.Unmarshal(message, &msg); err != nil {
+				log.Printf("Error unmarshaling message: %v", err)
+				continue
+			}
+			topic, ok := msg["topic"].(string)
+			if !ok {
+				continue
+			}
+			if strings.HasPrefix(topic, "orderbook") {
+				select {
+				case c.OrderBookCh <- message:
+				default:
+					log.Printf("OrderBookCh full, dropping message")
+				}
+			} else if topic == "order" {
+				select {
+				case c.OrderUpdateCh <- message:
+				default:
+					log.Printf("OrderUpdateCh full, dropping message")
+				}
+			}
+		}
+	}()
+}
+
+// Subscribe sends a subscription message to the specified topic.
+func (c *BybitExchangeClient) Subscribe(topic string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	subscribeMsg := map[string]interface{}{
+		"op":   "subscribe",
+		"args": []string{topic},
+	}
+	return c.conn.WriteJSON(subscribeMsg)
+}
+
+// Close shuts down the WebSocket connection and channels.
 func (c *BybitExchangeClient) Close() {
 	if c.conn != nil {
 		c.conn.Close()
 	}
+	close(c.OrderBookCh)
+	close(c.OrderUpdateCh)
 }

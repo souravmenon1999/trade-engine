@@ -2,6 +2,7 @@ package config
 
 import (
 	"log"
+	"sync/atomic"
 
 	"github.com/spf13/viper"
 )
@@ -27,7 +28,7 @@ type BybitExchangeClientConfig struct {
 }
 
 type OrderConfig struct {
-	Quantity int64 `mapstructure:"quantity"`
+	Quantity atomic.Int64 `mapstructure:"quantity"`
 }
 
 type InjectiveExchangeConfig struct {
@@ -44,9 +45,31 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, err
 	}
 
-	cfg := &Config{}
-	if err := viper.Unmarshal(cfg); err != nil {
+	// Temporarily load into a non-atomic struct for unmarshaling
+	type tempOrderConfig struct {
+		Quantity int64 `mapstructure:"quantity"`
+	}
+	type tempConfig struct {
+		BybitOrderbook      *BybitOrderbookConfig      `mapstructure:"bybitOrderbook"`
+		BybitExchangeClient *BybitExchangeClientConfig `mapstructure:"bybitExchangeClient"`
+		Order               *tempOrderConfig           `mapstructure:"order"`
+		InjectiveExchange   *InjectiveExchangeConfig   `mapstructure:"injectiveExchange"`
+	}
+
+	var tempCfg tempConfig
+	if err := viper.Unmarshal(&tempCfg); err != nil {
 		return nil, err
+	}
+
+	// Convert to atomic types
+	cfg := &Config{
+		BybitOrderbook:      tempCfg.BybitOrderbook,
+		BybitExchangeClient: tempCfg.BybitExchangeClient,
+		Order:               &OrderConfig{},
+		InjectiveExchange:   tempCfg.InjectiveExchange,
+	}
+	if tempCfg.Order != nil {
+		cfg.Order.Quantity.Store(tempCfg.Order.Quantity)
 	}
 
 	log.Printf("Config loaded: %+v", cfg)

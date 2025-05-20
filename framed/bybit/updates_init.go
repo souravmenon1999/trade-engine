@@ -19,3 +19,8 @@ func InitUpdatesClient(wsURL, apiKey, apiSecret string) (*BybitUpdatesClient, er
 		wsClient: wsClient,
 	}, nil
 }
+
+// Close shuts down the updates client's WebSocket connection.
+func (c *BybitUpdatesClient) Close() {
+	c.wsClient.Close()
+}
