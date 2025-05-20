@@ -5,20 +5,21 @@ import (
     "log"
     "strconv"
     "github.com/souravmenon1999/trade-engine/framed/types"
+	"sync/atomic"
 )
 
 // BybitOrderBookMessage defines the structure of a Bybit order book message.
-// U and Ts are int64 for JSON unmarshalling, then converted to types.Price.
+// U and Ts use int64 for JSON unmarshalling, then stored as atomic types.
 type BybitOrderBookMessage struct {
     Topic string `json:"topic"`
     Type  string `json:"type"`
     Data  struct {
         S   string     `json:"s"`
-        B   [][]string `json:"b"`
-        A   [][]string `json:"a"`
-        U   int64      `json:"u"`
+        B   [][]string `json:"b"` // Bid price and quantity pairs
+        A   [][]string `json:"a"` // Ask price and quantity pairs
+        U   int64      `json:"u"` // Update ID as int64 for deserialization
     } `json:"data"`
-    Ts int64 `json:"ts"`
+    Ts int64 `json:"ts"` // Timestamp as int64 for deserialization
 }
 
 // BybitVWAPProcessor processes Bybit order book messages and calculates VWAP.
@@ -44,8 +45,7 @@ func NewBybitVWAPProcessor(rawMsgCh <-chan []byte, processedCh chan *types.Order
 }
 
 // StartProcessing starts processing raw messages and sends processed data.
-// This runs in a single goroutine, ensuring thread safety without mutexes by
-// processing messages sequentially, preventing concurrent access to Asks and Bids.
+// Runs in a single goroutine to process messages sequentially, avoiding concurrent map access.
 func (p *BybitVWAPProcessor) StartProcessing() {
     go func() {
         for rawMessage := range p.RawMessageCh {
@@ -79,7 +79,7 @@ func (p *BybitVWAPProcessor) processAndApplyMessage(rawMessage []byte) {
     switch bybitMsg.Type {
     case "snapshot":
         log.Printf("Received snapshot for %s, update ID %d", p.symbol, bybitMsg.Data.U)
-        // Clear existing maps
+        // Clear existing maps for a fresh snapshot
         for k := range p.orderBookState.Asks {
             delete(p.orderBookState.Asks, k)
         }
@@ -94,13 +94,13 @@ func (p *BybitVWAPProcessor) processAndApplyMessage(rawMessage []byte) {
     case "delta":
         expectedSeq := p.orderBookState.Sequence.Load()
         if expectedSeq == 0 {
-            return
+            return // Ignore delta if no snapshot received yet
         } else if bybitMsg.Data.U <= expectedSeq {
             log.Printf("Received old or duplicate delta for %s: current update ID %d, received %d", p.symbol, expectedSeq, bybitMsg.Data.U)
             return
         } else if bybitMsg.Data.U > expectedSeq+1 {
             log.Printf("Sequence gap detected for %s! Current update ID %d, received %d. Resync needed.", p.symbol, expectedSeq, bybitMsg.Data.U)
-            // Clear maps
+            // Clear maps and reset sequence for resync
             for k := range p.orderBookState.Asks {
                 delete(p.orderBookState.Asks, k)
             }
@@ -122,6 +122,7 @@ func (p *BybitVWAPProcessor) processAndApplyMessage(rawMessage []byte) {
 }
 
 // applyUpdates applies price and quantity updates to the order book map.
+// Individual price levels are updated atomically, avoiding locks on the entire book.
 func (p *BybitVWAPProcessor) applyUpdates(updates [][]string, orderBookMap map[*types.Price]*types.Quantity) {
     for _, update := range updates {
         if len(update) != 2 {
@@ -138,30 +139,49 @@ func (p *BybitVWAPProcessor) applyUpdates(updates [][]string, orderBookMap map[*
             continue
         }
 
-        price := types.NewPrice(int64(priceFloat * 1_000_000))
-        quantity := types.NewQuantity(int64(qtyFloat * 1_000_000))
+        // Convert to int64 with scaling factor to avoid floating-point precision issues
+        priceVal := int64(priceFloat * 1_000_000)
+        quantityVal := int64(qtyFloat * 1_000_000)
 
-        if quantity.Load() == 0 {
-            delete(orderBookMap, price)
+        // Check if price already exists in the map
+        var price *types.Price
+        for existingPrice := range orderBookMap {
+            if existingPrice.Load() == priceVal {
+                price = existingPrice
+                break
+            }
+        }
+        if price == nil {
+            price = types.NewPrice(priceVal)
+        }
+
+        if quantityVal == 0 {
+            delete(orderBookMap, price) // Remove price level if quantity is zero
         } else {
-            orderBookMap[price] = quantity
+            quantity, exists := orderBookMap[price]
+            if !exists {
+                quantity = types.NewQuantity(quantityVal)
+                orderBookMap[price] = quantity
+            } else {
+                quantity.Store(quantityVal) // Atomically update existing quantity
+            }
         }
     }
 }
 
-// calculateVWAP calculates the volume-weighted average price.
+// calculateVWAP calculates the volume-weighted average price using atomic operations.
 func (p *BybitVWAPProcessor) calculateVWAP() *types.Price {
-    var sumPQ types.Price
-    var sumQ types.Quantity
-    sumPQ.Store(0)
-    sumQ.Store(0)
+    var sumPQ atomic.Int64
+    var sumQ atomic.Int64
 
+    // Aggregate bids
     for price, qty := range p.orderBookState.Bids {
         pVal := price.Load()
         qVal := qty.Load()
         sumPQ.Add(pVal * qVal)
         sumQ.Add(qVal)
     }
+    // Aggregate asks
     for price, qty := range p.orderBookState.Asks {
         pVal := price.Load()
         qVal := qty.Load()
@@ -169,8 +189,9 @@ func (p *BybitVWAPProcessor) calculateVWAP() *types.Price {
         sumQ.Add(qVal)
     }
 
-    if sumQ.Load() == 0 {
+    totalQty := sumQ.Load()
+    if totalQty == 0 {
         return types.NewPrice(0)
     }
-    return types.NewPrice(sumPQ.Load() / sumQ.Load())
+    return types.NewPrice(sumPQ.Load() / totalQty)
 }

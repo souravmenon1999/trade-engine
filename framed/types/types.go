@@ -32,20 +32,21 @@ func NewQuantity(val int64) *Quantity {
 type Instrument struct {
     BaseCurrency  string
     QuoteCurrency string
-    MinLotSize    *Quantity 
+    MinLotSize    *Quantity
     ContractType  string
 }
 
+// OrderBook represents the state of an order book with atomic fields.
 type OrderBook struct {
     Instrument     *Instrument
-    Asks           map[*Price]*Quantity 
-    Bids           map[*Price]*Quantity 
-    LastUpdateTime atomic.Int64
-    Sequence       atomic.Int64
+    Asks           map[*Price]*Quantity // Maps are not locked as a whole; individual levels updated atomically
+    Bids           map[*Price]*Quantity // Maps are not locked as a whole; individual levels updated atomically
+    LastUpdateTime atomic.Int64         // Atomic for thread-safe updates
+    Sequence       atomic.Int64         // Atomic for thread-safe updates
 }
 
 // OrderBookWithVWAP combines an order book with its VWAP.
 type OrderBookWithVWAP struct {
     OrderBook *OrderBook
-    VWAP      *Price 
+    VWAP      *Price
 }
