@@ -1,7 +1,7 @@
 package bybit
 
 import (
-	"github.com/souravmenon1999/trade-engine/framed/websockets/bybitws"
+	"github.com/souravmenon1999/trade-engine/framed/exchange/net/websockets/bybitws"
 )
 
 // BybitTradeClient handles trading operations on Bybit.

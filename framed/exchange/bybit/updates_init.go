@@ -1,7 +1,7 @@
 package bybit
 
 import (
-	"github.com/souravmenon1999/trade-engine/framed/websockets/bybitws"
+	"github.com/souravmenon1999/trade-engine/framed/exchange/net/websockets/bybitws"
 )
 
 // BybitUpdatesClient handles order status updates on Bybit.

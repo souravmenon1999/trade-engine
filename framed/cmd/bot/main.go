@@ -8,12 +8,12 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/souravmenon1999/trade-engine/framed/bybit"
+	"github.com/souravmenon1999/trade-engine/framed/exchange/bybit"
 	"github.com/souravmenon1999/trade-engine/framed/config"
-	"github.com/souravmenon1999/trade-engine/framed/injective"
+	"github.com/souravmenon1999/trade-engine/framed/exchange/injective"
 	"github.com/souravmenon1999/trade-engine/framed/processor/bybitorderbook"
 	"github.com/souravmenon1999/trade-engine/framed/types"
-	bybitws "github.com/souravmenon1999/trade-engine/framed/websockets/bybitws"
+	bybitws "github.com/souravmenon1999/trade-engine/framed/exchange/net/websockets/bybitws"
 )
 
 func main() {

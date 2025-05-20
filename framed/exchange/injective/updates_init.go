@@ -2,7 +2,7 @@ package injective
 
 import (
 	"github.com/InjectiveLabs/sdk-go/client/exchange"
-	"github.com/souravmenon1999/trade-engine/framed/grpc/injective"
+	"github.com/souravmenon1999/trade-engine/framed/exchange/net/grpc/injective"
 )
 
 // InitUpdatesClient initializes the Injective updates client.
