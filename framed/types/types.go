@@ -50,3 +50,11 @@ type OrderBookWithVWAP struct {
 	OrderBook *OrderBook
 	VWAP      *Price
 }
+
+// Order represents a trading order.
+type Order struct {
+	Instrument *Instrument
+	Price      *Price
+	Quantity   *Quantity
+	Side       string // "Buy" or "Sell"
+}

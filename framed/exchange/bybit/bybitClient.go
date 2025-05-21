@@ -1,96 +1,116 @@
-package bybitws
+package bybit
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
-	"time"
+	"sync"
 
-	"github.com/gorilla/websocket"
+	"github.com/souravmenon1999/trade-engine/framed/types"
+	"github.com/souravmenon1999/trade-engine/framed/websockets/bybit"
 )
 
-type BybitWSClient struct {
-	conn      *websocket.Conn
-	url       string
+type BybitClient struct {
+	wsClient  *bybit.BybitWSClient
+	subs      map[string]func([]byte)
+	subsMu    sync.Mutex
 	apiKey    string
 	apiSecret string
 }
 
-func NewBybitWSClient(url, apiKey, apiSecret string) *BybitWSClient {
-	return &BybitWSClient{
-		url:       url,
+func NewBybitClient(wsURL, apiKey, apiSecret string) *BybitClient {
+	return &BybitClient{
+		wsClient:  bybit.NewBybitWSClient(wsURL, apiKey, apiSecret),
+		subs:      make(map[string]func([]byte)),
 		apiKey:    apiKey,
 		apiSecret: apiSecret,
 	}
 }
 
-func (c *BybitWSClient) Connect() error {
-	var err error
-	c.conn, _, err = websocket.DefaultDialer.Dial(c.url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Bybit WebSocket: %w", err)
+func (c *BybitClient) Connect() error {
+	if err := c.wsClient.Connect(); err != nil {
+		return fmt.Errorf("failed to connect to Bybit: %w", err)
 	}
-	if err := c.authenticate(); err != nil {
-		c.conn.Close()
-		return fmt.Errorf("failed to authenticate: %w", err)
-	}
-	log.Println("Bybit WebSocket connected")
+	log.Println("Bybit client connected")
 	return nil
 }
 
-func (c *BybitWSClient) authenticate() error {
-	timestamp := time.Now().UnixMilli()
-	signature := c.generateSignature(timestamp)
-	authMsg := map[string]interface{}{
-		"op": "auth",
-		"args": []interface{}{
-			c.apiKey,
-			timestamp,
-			signature,
+func (c *BybitClient) Subscribe(topic string, callback func([]byte)) error {
+	c.subsMu.Lock()
+	defer c.subsMu.Unlock()
+	if _, exists := c.subs[topic]; exists {
+		return fmt.Errorf("already subscribed to topic: %s", topic)
+	}
+	c.subs[topic] = callback
+	if err := c.wsClient.Subscribe(topic); err != nil {
+		delete(c.subs, topic)
+		return err
+	}
+	log.Printf("Subscribed to %s", topic)
+	return nil
+}
+
+func (c *BybitClient) SendOrder(order *types.Order) error {
+	orderMsg := map[string]interface{}{
+		"op": "order.create",
+		"args": map[string]interface{}{
+			"symbol":     order.Instrument.BaseCurrency + order.Instrument.QuoteCurrency,
+			"side":       "Buy", // Adjust based on order.Side
+			"order_type": "Limit",
+			"qty":        order.Quantity.Load(),
+			"price":      order.Price.Load(),
 		},
 	}
-	return c.SendJSON(authMsg)
-}
-
-func (c *BybitWSClient) generateSignature(timestamp int64) string {
-	toSign := fmt.Sprintf("GET/realtime%d", timestamp)
-	h := hmac.New(sha256.New, []byte(c.apiSecret))
-	h.Write([]byte(toSign))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func (c *BybitWSClient) Subscribe(topic string) error {
-	subscribeMsg := map[string]interface{}{
-		"op":   "subscribe",
-		"args": []string{topic},
+	if err := c.wsClient.SendJSON(orderMsg); err != nil {
+		return fmt.Errorf("failed to send order: %w", err)
 	}
-	if err := c.SendJSON(subscribeMsg); err != nil {
-		return fmt.Errorf("subscription to %s failed: %w", topic, err)
-	}
-	log.Printf("Subscription sent for topic: %s", topic)
+	log.Printf("Order sent for %s", order.Instrument.BaseCurrency+order.Instrument.QuoteCurrency)
 	return nil
 }
 
-func (c *BybitWSClient) SendJSON(v interface{}) error {
-	if c.conn == nil {
-		return fmt.Errorf("no WebSocket connection")
-	}
-	return c.conn.WriteJSON(v)
+func (c *BybitClient) StartReading() {
+	go func() {
+		for {
+			message, err := c.wsClient.ReadMessage()
+			if err != nil {
+				log.Printf("Error reading message: %v", err)
+				continue
+			}
+			c.handleMessage(message)
+		}
+	}()
 }
 
-func (c *BybitWSClient) ReadMessage() ([]byte, error) {
-	if c.conn == nil {
-		return nil, fmt.Errorf("no WebSocket connection")
+func (c *BybitClient) handleMessage(message []byte) {
+	var msg map[string]interface{}
+	if err := json.Unmarshal(message, &msg); err != nil {
+		log.Printf("Error unmarshaling message: %v", err)
+		return
 	}
-	_, message, err := c.conn.ReadMessage()
-	return message, err
+	if op, ok := msg["op"].(string); ok && op == "auth" {
+		if success, ok := msg["success"].(bool); ok && success {
+			log.Println("Authentication successful")
+		} else {
+			log.Println("Authentication failed")
+		}
+		return
+	}
+	topic, ok := msg["topic"].(string)
+	if !ok {
+		log.Println("Message without topic")
+		return
+	}
+	c.subsMu.Lock()
+	callback, exists := c.subs[topic]
+	c.subsMu.Unlock()
+	if exists {
+		callback(message)
+	} else {
+		log.Printf("No callback for topic: %s", topic)
+	}
 }
 
-func (c *BybitWSClient) Close() {
-	if c.conn != nil {
-		c.conn.Close()
-		log.Println("Bybit WebSocket closed")
-	}
+func (c *BybitClient) Close() {
+	c.wsClient.Close()
+	log.Println("Bybit client closed")
 }

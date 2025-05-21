@@ -58,6 +58,11 @@ func main() {
 		log.Fatal().Err(err).Msgf("Failed to subscribe to %s", orderBookTopic)
 	}
 
+	// Example: Subscribe to order updates (can be extended for other topics)
+	// bybitClient.Subscribe("order", func(data []byte) {
+	// 	log.Info().Msgf("Received order update: %s", string(data))
+	// })
+
 	injectiveTradeClient, err := injective.InitTradeClient(
 		cfg.InjectiveExchange.NetworkName,
 		cfg.InjectiveExchange.Lb,

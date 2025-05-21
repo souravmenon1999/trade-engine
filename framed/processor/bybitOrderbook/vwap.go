@@ -89,22 +89,22 @@ type BybitVWAPProcessor struct {
 
 // NewBybitVWAPProcessor creates a new BybitVWAPProcessor with a callback for processed data.
 func NewBybitVWAPProcessor(processedCallback func(*types.OrderBookWithVWAP), symbol string, instrument *types.Instrument) *BybitVWAPProcessor {
-    return &BybitVWAPProcessor{
-        processedCallback: processedCallback,
-        symbol:            symbol,
-        orderBookState: &types.OrderBook{
-            Asks:       make(map[*types.Price]*types.Quantity),
-            Bids:       make(map[*types.Price]*types.Quantity),
-            Instrument: instrument,
-        },
-    }
+	return &BybitVWAPProcessor{
+		processedCallback: processedCallback,
+		symbol:            symbol,
+		orderBookState: &types.OrderBook{
+			Asks:       make(map[*types.Price]*types.Quantity),
+			Bids:       make(map[*types.Price]*types.Quantity),
+			Instrument: instrument,
+		},
+	}
 }
 
 // ProcessAndApplyMessage processes a raw message and applies updates to the order book.
 func (p *BybitVWAPProcessor) ProcessAndApplyMessage(rawMessage []byte) {
 	var bybitMsg BybitOrderbook
 	if err := json.Unmarshal(rawMessage, &bybitMsg); err != nil {
-		log.Printf("Error unmarshalling Bybit message: %v", err)
+		log.Printf("Error unmarshaling Bybit message: %v", err)
 		return
 	}
 
@@ -143,15 +143,15 @@ func (p *BybitVWAPProcessor) ProcessAndApplyMessage(rawMessage []byte) {
 
 	// After updating orderbook, calculate VWAP and invoke callback
 	if p.orderBookState.Sequence.Load() > 0 {
-        vwap := p.calculateVWAP() // Assuming this method exists
-        processedData := &types.OrderBookWithVWAP{
-            OrderBook: p.orderBookState,
-            VWAP:      vwap,
-        }
-        if p.processedCallback != nil {
-            p.processedCallback(processedData)
-        }
-    }
+		vwap := p.calculateVWAP()
+		processedData := &types.OrderBookWithVWAP{
+			OrderBook: p.orderBookState,
+			VWAP:      vwap,
+		}
+		if p.processedCallback != nil {
+			p.processedCallback(processedData)
+		}
+	}
 }
 
 // calculateVWAP calculates the volume-weighted average price using atomic operations.
