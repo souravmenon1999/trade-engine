@@ -27,13 +27,32 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to load config")
 	}
 
-	// Initialize Bybit orderbook client
-	bybitOrderbookClient := bybitws.NewBybitExchangeClient(cfg.BybitOrderbook.WSUrl, "", "")
+	// Initialize processed data channel with a larger buffer
+	processedDataChannel := make(chan *types.OrderBookWithVWAP, 100)
+
+	// Define the instrument
+	instrument := &types.Instrument{
+		BaseCurrency:  cfg.BybitOrderbook.BaseCurrency,
+		QuoteCurrency: cfg.BybitOrderbook.QuoteCurrency,
+		MinLotSize:    types.NewQuantity(100000),
+		ContractType:  "Perpetual",
+	}
+
+	// Initialize Bybit VWAP processor
+	vwapProcessor := bybitorderbook.NewBybitVWAPProcessor(processedDataChannel, cfg.BybitOrderbook.Symbol, instrument)
+
+	// Initialize Bybit orderbook client with the processor's callback
+	bybitOrderbookClient := bybitws.NewBybitOrderBookWSClient(cfg.BybitOrderbook.WSUrl, vwapProcessor.processAndApplyMessage)
 	if err := bybitOrderbookClient.Connect(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to Bybit orderbook WebSocket")
 	}
-	go bybitOrderbookClient.StartReading() // Run in a goroutine
 	log.Info().Msg("Bybit orderbook client connection established successfully")
+
+	// Subscribe to orderbook
+	orderBookTopic := "orderbook.50." + cfg.BybitOrderbook.Symbol
+	if err := bybitOrderbookClient.Subscribe(orderBookTopic); err != nil {
+		log.Fatal().Err(err).Msgf("Failed to subscribe to Bybit orderbook for %s", cfg.BybitOrderbook.Symbol)
+	}
 
 	// Initialize Bybit trading client
 	bybitTradeClient, err := bybit.InitTradeClient(
@@ -68,23 +87,6 @@ func main() {
 	}
 	_ = injectiveTradeClient // Temporary usage; replace with actual logic if needed
 	log.Info().Msg("Injective trade client connection established successfully")
-
-	processedDataChannel := make(chan *types.OrderBookWithVWAP, 10)
-
-	instrument := &types.Instrument{
-		BaseCurrency:  cfg.BybitOrderbook.BaseCurrency,
-		QuoteCurrency: cfg.BybitOrderbook.QuoteCurrency,
-		MinLotSize:    types.NewQuantity(100000),
-		ContractType:  "Perpetual",
-	}
-
-	vwapProcessor := bybitorderbook.NewBybitVWAPProcessor(bybitOrderbookClient.OrderBookCh, processedDataChannel, cfg.BybitOrderbook.Symbol, instrument)
-	vwapProcessor.StartProcessing()
-
-	orderBookTopic := "orderbook.50." + cfg.BybitOrderbook.Symbol
-	if err := bybitOrderbookClient.Subscribe(orderBookTopic); err != nil {
-		log.Fatal().Err(err).Msgf("Failed to subscribe to Bybit orderbook for %s", cfg.BybitOrderbook.Symbol)
-	}
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)

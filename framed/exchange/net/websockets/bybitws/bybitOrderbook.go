@@ -8,16 +8,17 @@ import (
 )
 
 type BybitOrderBookWSClient struct {
-	conn         *websocket.Conn
-	url          string
-	RawMessageCh chan []byte
-	topic        string
+	conn     *websocket.Conn
+	url      string
+	callback func([]byte) // Callback to process messages
+	topic    string
 }
 
-func NewBybitOrderBookWSClient(url string) *BybitOrderBookWSClient {
+// NewBybitOrderBookWSClient creates a new client with a callback for message handling.
+func NewBybitOrderBookWSClient(url string, callback func([]byte)) *BybitOrderBookWSClient {
 	return &BybitOrderBookWSClient{
-		url:          url,
-		RawMessageCh: make(chan []byte, 100),
+		url:      url,
+		callback: callback,
 	}
 }
 
@@ -56,7 +57,6 @@ func (c *BybitOrderBookWSClient) Close() {
 		c.conn.Close()
 		log.Println("Bybit orderbook websocket connection closed")
 	}
-	close(c.RawMessageCh)
 }
 
 func (c *BybitOrderBookWSClient) readMessages() {
@@ -68,7 +68,9 @@ func (c *BybitOrderBookWSClient) readMessages() {
 			c.reconnect()
 			return
 		}
-		c.RawMessageCh <- message
+		if c.callback != nil {
+			c.callback(message)
+		}
 	}
 }
 

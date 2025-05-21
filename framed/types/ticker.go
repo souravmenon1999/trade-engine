@@ -3,7 +3,7 @@ package types
 
 import "sync/atomic"
 
-type Ticker struct {
+type Trade struct {
     Timestamp atomic.Int64 // Unix timestamp
     Symbol    string       // e.g., BTCUSD
     Price     atomic.Int64 // Price in integer form (scaled)
