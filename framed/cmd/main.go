@@ -215,7 +215,7 @@ batchSizes := []int{
     30000, 40000, 50000, 75000, 100000, 150000,
     200000, 250000, 300000, 400000, 500000, 750000, 1000000,
 }
-	numRuns := 10 // Number of times to run each method for statistical averaging
+	numRuns := 500 // Number of times to run each method for statistical averaging
 
 	log.Printf("Starting benchmark for processing the ENTIRE file with varying BATCH_SIZE: %s", *filePath)
 
