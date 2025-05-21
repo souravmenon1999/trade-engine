@@ -9,9 +9,8 @@ import (
 	"sync/atomic"
 )
 
-// BybitOrderBookMessage defines the structure of a Bybit order book message.
-// U and Ts use int64 for JSON unmarshalling, then stored as atomic types.
-type BybitOrderBookMessage struct {
+// BybitOrderbook defines the structure of a Bybit order book message.
+type BybitOrderbook struct {
 	Topic string `json:"topic"`
 	Type  string `json:"type"`
 	Data  struct {
@@ -23,100 +22,24 @@ type BybitOrderBookMessage struct {
 	Ts int64 `json:"ts"` // Timestamp as int64 for deserialization
 }
 
-// BybitVWAPProcessor processes Bybit order book messages and calculates VWAP.
-type BybitVWAPProcessor struct {
-	ProcessedDataCh chan *types.OrderBookWithVWAP
-	orderBookState  *types.OrderBook
-	symbol          string
+// ToOrderbook converts BybitOrderbook to the internal Orderbook struct.
+func (b *BybitOrderbook) ToOrderbook() *types.OrderBook {
+	ob := &types.OrderBook{
+		Asks:           make(map[*types.Price]*types.Quantity),
+		Bids:           make(map[*types.Price]*types.Quantity),
+		Instrument:     nil, // Set if needed
+		LastUpdateTime: *new(atomic.Int64),
+		Sequence:       *new(atomic.Int64),
+	}
+	b.applyUpdates(b.Data.B, ob.Bids)
+	b.applyUpdates(b.Data.A, ob.Asks)
+	ob.Sequence.Store(b.Data.U)
+	ob.LastUpdateTime.Store(b.Ts)
+	return ob
 }
 
-// NewBybitVWAPProcessor creates a new BybitVWAPProcessor.
-func NewBybitVWAPProcessor(processedCh chan *types.OrderBookWithVWAP, symbol string, instrument *types.Instrument) *BybitVWAPProcessor {
-	return &BybitVWAPProcessor{
-		ProcessedDataCh: processedCh,
-		symbol:          symbol,
-		orderBookState: &types.OrderBook{
-			Asks:       make(map[*types.Price]*types.Quantity),
-			Bids:       make(map[*types.Price]*types.Quantity),
-			Instrument: instrument,
-		},
-	}
-}
-
-// processAndApplyMessage processes a raw message and applies updates to the order book.
-func (p *BybitVWAPProcessor) processAndApplyMessage(rawMessage []byte) {
-	var bybitMsg BybitOrderBookMessage
-	if err := json.Unmarshal(rawMessage, &bybitMsg); err != nil {
-		log.Printf("Error unmarshalling Bybit message: %v", err)
-		return
-	}
-
-	if bybitMsg.Data.S != p.symbol {
-		return
-	}
-
-	switch bybitMsg.Type {
-	case "snapshot":
-		log.Printf("Received snapshot for %s, update ID %d", p.symbol, bybitMsg.Data.U)
-		// Clear existing maps for a fresh snapshot
-		for k := range p.orderBookState.Asks {
-			delete(p.orderBookState.Asks, k)
-		}
-		for k := range p.orderBookState.Bids {
-			delete(p.orderBookState.Bids, k)
-		}
-		p.applyUpdates(bybitMsg.Data.B, p.orderBookState.Bids)
-		p.applyUpdates(bybitMsg.Data.A, p.orderBookState.Asks)
-		p.orderBookState.Sequence.Store(bybitMsg.Data.U)
-		p.orderBookState.LastUpdateTime.Store(bybitMsg.Ts)
-
-	case "delta":
-		expectedSeq := p.orderBookState.Sequence.Load()
-		if expectedSeq == 0 {
-			return // Ignore delta if no snapshot received yet
-		} else if bybitMsg.Data.U <= expectedSeq {
-			log.Printf("Received old or duplicate delta for %s: current update ID %d, received %d", p.symbol, expectedSeq, bybitMsg.Data.U)
-			return
-		} else if bybitMsg.Data.U > expectedSeq+1 {
-			log.Printf("Sequence gap detected for %s! Current update ID %d, received %d. Resync needed.", p.symbol, expectedSeq, bybitMsg.Data.U)
-			// Clear maps and reset sequence for resync
-			for k := range p.orderBookState.Asks {
-				delete(p.orderBookState.Asks, k)
-			}
-			for k := range p.orderBookState.Bids {
-				delete(p.orderBookState.Bids, k)
-			}
-			p.orderBookState.Sequence.Store(0)
-			return
-		}
-
-		p.applyUpdates(bybitMsg.Data.B, p.orderBookState.Bids)
-		p.applyUpdates(bybitMsg.Data.A, p.orderBookState.Asks)
-		p.orderBookState.Sequence.Store(bybitMsg.Data.U)
-		p.orderBookState.LastUpdateTime.Store(bybitMsg.Ts)
-
-	default:
-		log.Printf("Received unknown message type: %s, topic: %s", bybitMsg.Type, bybitMsg.Topic)
-	}
-
-	// After updating orderbook, calculate VWAP and send to ProcessedDataCh
-	if p.orderBookState.Sequence.Load() > 0 {
-		vwap := p.calculateVWAP()
-		processedData := &types.OrderBookWithVWAP{
-			OrderBook: p.orderBookState,
-			VWAP:      vwap,
-		}
-		select {
-		case p.ProcessedDataCh <- processedData:
-		default:
-			log.Printf("ProcessedDataCh full, dropping message for %s", p.symbol)
-		}
-	}
-}
-
-// applyUpdates applies price and quantity updates to the order book map.
-// Individual price levels are updated atomically, avoiding locks on the entire book.
-func (p *BybitVWAPProcessor) applyUpdates(updates [][]string, orderBookMap map[*types.Price]*types.Quantity) {
+// applyUpdates is a helper to apply bid/ask updates to the orderbook map.
+func (b *BybitOrderbook) applyUpdates(updates [][]string, orderBookMap map[*types.Price]*types.Quantity) {
 	for _, update := range updates {
 		if len(update) != 2 {
 			continue
@@ -131,12 +54,8 @@ func (p *BybitVWAPProcessor) applyUpdates(updates [][]string, orderBookMap map[*
 			log.Printf("Error parsing quantity '%s': %v", update[1], err)
 			continue
 		}
-
-		// Convert to int64 with scaling factor to avoid floating-point precision issues
 		priceVal := int64(priceFloat * 1_000_000)
 		quantityVal := int64(qtyFloat * 1_000_000)
-
-		// Check if price already exists in the map
 		var price *types.Price
 		for existingPrice := range orderBookMap {
 			if existingPrice.Load() == priceVal {
@@ -147,19 +66,92 @@ func (p *BybitVWAPProcessor) applyUpdates(updates [][]string, orderBookMap map[*
 		if price == nil {
 			price = types.NewPrice(priceVal)
 		}
-
 		if quantityVal == 0 {
-			delete(orderBookMap, price) // Remove price level if quantity is zero
+			delete(orderBookMap, price)
 		} else {
 			quantity, exists := orderBookMap[price]
 			if !exists {
 				quantity = types.NewQuantity(quantityVal)
 				orderBookMap[price] = quantity
 			} else {
-				quantity.Store(quantityVal) // Atomically update existing quantity
+				quantity.Store(quantityVal)
 			}
 		}
 	}
+}
+
+// BybitVWAPProcessor processes Bybit order book messages and calculates VWAP.
+type BybitVWAPProcessor struct {
+	processedCallback func(*types.OrderBookWithVWAP)
+	orderBookState    *types.OrderBook
+	symbol            string
+}
+
+// NewBybitVWAPProcessor creates a new BybitVWAPProcessor with a callback for processed data.
+func NewBybitVWAPProcessor(processedCallback func(*types.OrderBookWithVWAP), symbol string, instrument *types.Instrument) *BybitVWAPProcessor {
+    return &BybitVWAPProcessor{
+        processedCallback: processedCallback,
+        symbol:            symbol,
+        orderBookState: &types.OrderBook{
+            Asks:       make(map[*types.Price]*types.Quantity),
+            Bids:       make(map[*types.Price]*types.Quantity),
+            Instrument: instrument,
+        },
+    }
+}
+
+// ProcessAndApplyMessage processes a raw message and applies updates to the order book.
+func (p *BybitVWAPProcessor) ProcessAndApplyMessage(rawMessage []byte) {
+	var bybitMsg BybitOrderbook
+	if err := json.Unmarshal(rawMessage, &bybitMsg); err != nil {
+		log.Printf("Error unmarshalling Bybit message: %v", err)
+		return
+	}
+
+	if bybitMsg.Data.S != p.symbol {
+		return
+	}
+
+	switch bybitMsg.Type {
+	case "snapshot":
+		log.Printf("Received snapshot for %s, update ID %d", p.symbol, bybitMsg.Data.U)
+		p.orderBookState = bybitMsg.ToOrderbook()
+	case "delta":
+		expectedSeq := p.orderBookState.Sequence.Load()
+		if expectedSeq == 0 {
+			return // Ignore delta if no snapshot received yet
+		} else if bybitMsg.Data.U <= expectedSeq {
+			log.Printf("Received old or duplicate delta for %s: current update ID %d, received %d", p.symbol, expectedSeq, bybitMsg.Data.U)
+			return
+		} else if bybitMsg.Data.U > expectedSeq+1 {
+			log.Printf("Sequence gap detected for %s! Current update ID %d, received %d. Resync needed.", p.symbol, expectedSeq, bybitMsg.Data.U)
+			p.orderBookState = &types.OrderBook{
+				Asks:       make(map[*types.Price]*types.Quantity),
+				Bids:       make(map[*types.Price]*types.Quantity),
+				Instrument: p.orderBookState.Instrument,
+			}
+			p.orderBookState.Sequence.Store(0)
+			return
+		}
+		bybitMsg.applyUpdates(bybitMsg.Data.B, p.orderBookState.Bids)
+		bybitMsg.applyUpdates(bybitMsg.Data.A, p.orderBookState.Asks)
+		p.orderBookState.Sequence.Store(bybitMsg.Data.U)
+		p.orderBookState.LastUpdateTime.Store(bybitMsg.Ts)
+	default:
+		log.Printf("Received unknown message type: %s, topic: %s", bybitMsg.Type, bybitMsg.Topic)
+	}
+
+	// After updating orderbook, calculate VWAP and invoke callback
+	if p.orderBookState.Sequence.Load() > 0 {
+        vwap := p.calculateVWAP() // Assuming this method exists
+        processedData := &types.OrderBookWithVWAP{
+            OrderBook: p.orderBookState,
+            VWAP:      vwap,
+        }
+        if p.processedCallback != nil {
+            p.processedCallback(processedData)
+        }
+    }
 }
 
 // calculateVWAP calculates the volume-weighted average price using atomic operations.

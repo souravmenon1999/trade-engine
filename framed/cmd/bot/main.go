@@ -27,9 +27,6 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to load config")
 	}
 
-	// Initialize processed data channel with a larger buffer
-	processedDataChannel := make(chan *types.OrderBookWithVWAP, 100)
-
 	// Define the instrument
 	instrument := &types.Instrument{
 		BaseCurrency:  cfg.BybitOrderbook.BaseCurrency,
@@ -38,11 +35,20 @@ func main() {
 		ContractType:  "Perpetual",
 	}
 
-	// Initialize Bybit VWAP processor
-	vwapProcessor := bybitorderbook.NewBybitVWAPProcessor(processedDataChannel, cfg.BybitOrderbook.Symbol, instrument)
+	// Initialize Bybit VWAP processor with a callback for processed data
+	vwapProcessor := bybitorderbook.NewBybitVWAPProcessor(
+		func(data *types.OrderBookWithVWAP) {
+			ob := data.OrderBook
+			vwap := data.VWAP
+			log.Info().Int64("vwap", vwap.Load()).Msg("Calculated VWAP")
+			_ = ob // Placeholder; add further processing if needed
+		},
+		cfg.BybitOrderbook.Symbol,
+		instrument,
+	)
 
 	// Initialize Bybit orderbook client with the processor's callback
-	bybitOrderbookClient := bybitws.NewBybitOrderBookWSClient(cfg.BybitOrderbook.WSUrl, vwapProcessor.processAndApplyMessage)
+	bybitOrderbookClient := bybitws.NewBybitOrderBookWSClient(cfg.BybitOrderbook.WSUrl, vwapProcessor.ProcessAndApplyMessage)
 	if err := bybitOrderbookClient.Connect(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to Bybit orderbook WebSocket")
 	}
@@ -76,7 +82,7 @@ func main() {
 	}
 	log.Info().Msg("Bybit updates client connection established successfully")
 
-	// Initialize Injective trade client and use it to avoid "declared and not used"
+	// Initialize Injective trade client
 	injectiveTradeClient, err := injective.InitTradeClient(
 		cfg.InjectiveExchange.NetworkName,
 		cfg.InjectiveExchange.Lb,
@@ -85,25 +91,18 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize Injective trade client")
 	}
-	_ = injectiveTradeClient // Temporary usage; replace with actual logic if needed
+	_ = injectiveTradeClient // Temporary usage; replace with actual logic
 	log.Info().Msg("Injective trade client connection established successfully")
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
 
-	go func() {
-		for data := range processedDataChannel {
-			ob := data.OrderBook
-			vwap := data.VWAP
-			log.Info().Int64("vwap", vwap.Load()).Msg("Calculated VWAP")
-			_ = ob
-		}
-		log.Info().Msg("Main processing goroutine finished")
-	}()
-
 	defer bybitOrderbookClient.Close()
 	defer bybitTradeClient.Close()
 	defer bybitUpdatesClient.Close()
+
+	// Start reading WebSocket messages in a goroutine
+	go bybitOrderbookClient.StartReading()
 
 	<-stopCh
 	log.Info().Msg("Shutting down...")

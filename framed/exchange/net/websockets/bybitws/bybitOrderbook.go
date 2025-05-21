@@ -7,6 +7,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// BybitOrderBookWSClient manages the WebSocket connection to Bybit.
 type BybitOrderBookWSClient struct {
 	conn     *websocket.Conn
 	url      string
@@ -31,8 +32,6 @@ func (c *BybitOrderBookWSClient) Connect() error {
 	}
 	c.conn = conn
 	log.Println("Connected to Bybit orderbook websocket")
-
-	go c.readMessages()
 	return nil
 }
 
@@ -59,7 +58,7 @@ func (c *BybitOrderBookWSClient) Close() {
 	}
 }
 
-func (c *BybitOrderBookWSClient) readMessages() {
+func (c *BybitOrderBookWSClient) StartReading() {
 	defer c.Close()
 	for {
 		_, message, err := c.conn.ReadMessage()
@@ -89,6 +88,7 @@ func (c *BybitOrderBookWSClient) reconnect() {
 				continue
 			}
 		}
+		go c.StartReading() // Restart reading in a new goroutine
 		break
 	}
 }
