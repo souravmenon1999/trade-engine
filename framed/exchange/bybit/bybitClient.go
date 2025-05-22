@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/souravmenon1999/trade-engine/framed/types"
-	"github.com/souravmenon1999/trade-engine/framed/websockets/bybit"
+	"github.com/souravmenon1999/trade-engine/framed/exchange/net/websockets/bybit"
 )
 
 type BybitClient struct {

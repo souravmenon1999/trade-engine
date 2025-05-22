@@ -2,6 +2,7 @@ package types
 
 import (
 	"sync/atomic"
+	
 )
 
 // Price is a struct embedding atomic.Int64 for thread-safe price values.
@@ -13,6 +14,25 @@ type Price struct {
 type Quantity struct {
 	atomic.Int64
 }
+
+type ExchangeType string
+
+const (
+	ExchangeTypeBybit   ExchangeType = "Bybit"
+	ExchangeTypeBinance ExchangeType = "Binance"
+	ExchangeTypeDrift   ExchangeType = "Drift"
+)
+
+type Exchange struct {
+
+    exchange  *ExchangeType
+    id string
+    name string
+    active bool
+
+}
+
+
 
 // NewPrice creates a new Price with an initial value and returns a pointer.
 func NewPrice(val int64) *Price {
@@ -42,7 +62,8 @@ type OrderBook struct {
 	Asks           map[*Price]*Quantity // Maps are not locked as a whole; individual levels updated atomically
 	Bids           map[*Price]*Quantity // Maps are not locked as a whole; individual levels updated atomically
 	LastUpdateTime atomic.Int64         // Atomic for thread-safe updates
-	Sequence       atomic.Int64         // Atomic for thread-safe updates
+	Sequence       atomic.Int64
+	Exchange       *Exchange  
 }
 
 // OrderBookWithVWAP combines an order book with its VWAP.

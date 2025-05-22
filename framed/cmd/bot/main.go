@@ -58,20 +58,31 @@ func main() {
 		log.Fatal().Err(err).Msgf("Failed to subscribe to %s", orderBookTopic)
 	}
 
-	// Example: Subscribe to order updates (can be extended for other topics)
-	// bybitClient.Subscribe("order", func(data []byte) {
-	// 	log.Info().Msgf("Received order update: %s", string(data))
-	// })
 
-	injectiveTradeClient, err := injective.InitTradeClient(
+	// Callback for order updates
+	orderUpdateCallback := func(data []byte) {
+		log.Info().Msgf("Received Injective order history update: %s", string(data))
+	}
+
+	// Initialize Injective client
+	injectiveClient, err := injective.NewInjectiveClient(
 		cfg.InjectiveExchange.NetworkName,
 		cfg.InjectiveExchange.Lb,
 		cfg.InjectiveExchange.PrivKey,
+		orderUpdateCallback,
 	)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize Injective trade client")
+		log.Fatal().Err(err).Msg("Failed to initialize Injective client")
 	}
-	_ = injectiveTradeClient
+	// if err := injectiveClient.SubscribeOrderHistory(
+	// 	cfg.InjectiveExchange.MarketId,
+	// 	cfg.InjectiveExchange.SubaccountId,
+	// 	func(data []byte) {
+	// 		log.Info().Msgf("Received Injective order history update: %s", string(data))
+	// 	},
+	// ); err != nil {
+	// 	log.Fatal().Err(err).Msg("Failed to subscribe to Injective order history")
+	// }
 
 	bybitClient.StartReading()
 
