@@ -65,24 +65,24 @@ func main() {
 	}
 
 	// Initialize Injective client
-	injectiveClient, err := injective.NewInjectiveClient(
-		cfg.InjectiveExchange.NetworkName,
-		cfg.InjectiveExchange.Lb,
-		cfg.InjectiveExchange.PrivKey,
-		orderUpdateCallback,
-	)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize Injective client")
-	}
-	// if err := injectiveClient.SubscribeOrderHistory(
-	// 	cfg.InjectiveExchange.MarketId,
-	// 	cfg.InjectiveExchange.SubaccountId,
-	// 	func(data []byte) {
-	// 		log.Info().Msgf("Received Injective order history update: %s", string(data))
-	// 	},
-	// ); err != nil {
-	// 	log.Fatal().Err(err).Msg("Failed to subscribe to Injective order history")
-	// }
+	// Initialize client WITH callback in constructor
+injectiveClient, err := injective.NewInjectiveClient(
+    cfg.InjectiveExchange.NetworkName,
+    cfg.InjectiveExchange.Lb,
+    cfg.InjectiveExchange.PrivKey,
+    cfg.InjectiveExchange.MarketId,
+    cfg.InjectiveExchange.SubaccountId,
+    orderUpdateCallback,
+)
+if err != nil {
+    log.Fatal().Err(err).Msg("Failed to initialize Injective client")
+}
+log.Info().
+    Str("market_id", cfg.InjectiveExchange.MarketId).
+    Msg("Injective client operational - listening for order updates")
+
+// Add empty struct usage (safely consumes the variable)
+_ = injectiveClient.GetSenderAddress() // No-op but uses the client
 
 	bybitClient.StartReading()
 

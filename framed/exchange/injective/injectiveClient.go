@@ -6,61 +6,100 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/InjectiveLabs/sdk-go/client/chain"
-	"github.com/InjectiveLabs/sdk-go/client/exchange"
+	chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
+	exchangeclient "github.com/InjectiveLabs/sdk-go/client/exchange"
+	"github.com/InjectiveLabs/sdk-go/client/common"
 	derivativeExchangePB "github.com/InjectiveLabs/sdk-go/exchange/derivative_exchange_rpc/pb"
-	"github.com/souravmenon1999/trade-engine/framed/exchange/injective/grpc"
+	"github.com/cometbft/cometbft/rpc/client/http"
 )
 
-// InjectiveClient holds the trade and updates clients
 type InjectiveClient struct {
-	tradeClient   *chain.ChainClient
-	updatesClient *exchange.ExchangeClient
+	tradeClient   chainclient.ChainClient // Changed to value type
+	updatesClient exchangeclient.ExchangeClient // Changed to value type (interface)
 	senderAddress string
 	ctx           context.Context
 	cancel        context.CancelFunc
 }
 
-// NewInjectiveClient initializes the InjectiveClient with trade and updates clients
-func NewInjectiveClient(networkName, lb, privKey string, orderUpdateCallback func([]byte)) (*InjectiveClient, error) {
-	grpcClient, err := grpc.NewInjectiveGRPCClient(networkName, lb)
+func NewInjectiveClient(
+	networkName, lb, privKey, marketId, subaccountId string, 
+	callback func([]byte),
+) (*InjectiveClient, error) {
+	network := common.LoadNetwork(networkName, lb)
+
+	tmClient, err := http.New(network.TmEndpoint, "/websocket")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create gRPC client: %w", err)
+		return nil, fmt.Errorf("failed to create Tendermint client: %w", err)
 	}
 
-	tradeClient, err := grpcClient.GetTradeClient(privKey)
+	senderAddress, cosmosKeyring, err := chainclient.InitCosmosKeyring(
+		"", "injective", "memory", "default", "", privKey, false,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get trade client: %w", err)
+		return nil, fmt.Errorf("failed to init keyring: %w", err)
 	}
 
-	updatesClient, err := grpcClient.GetUpdatesClient()
+	clientCtx, err := chainclient.NewClientContext(
+		network.ChainId, senderAddress.String(), cosmosKeyring,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get updates client: %w", err)
+		return nil, fmt.Errorf("failed to create client context: %w", err)
 	}
+	clientCtx = clientCtx.WithNodeURI(network.TmEndpoint).WithClient(tmClient)
+
+	// Initialize trade client with confirmation
+	tradeClient, err := chainclient.NewChainClient(
+		clientCtx, network, common.OptionGasPrices("0.0005inj"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create trade client: %w", err)
+	}
+	log.Println("✅ Trade client initialized successfully")
+
+	// Initialize updates client with confirmation
+	updatesClient, err := exchangeclient.NewExchangeClient(network)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create updates client: %w", err)
+	}
+	log.Println("📊 Orderbook updates client ready")
 
 	ctx, cancel := context.WithCancel(context.Background())
+	
 	client := &InjectiveClient{
 		tradeClient:   tradeClient,
 		updatesClient: updatesClient,
-		senderAddress: tradeClient.FromAddress().String(),
+		senderAddress: senderAddress.String(),
 		ctx:           ctx,
 		cancel:        cancel,
 	}
 
-	// Start subscription automatically if callback is provided
-	if orderUpdateCallback != nil {
-		go client.SubscribeOrderHistory(orderUpdateCallback)
+	// Add final initialization log
+	log.Printf("🚀 Injective client fully initialized (Sender: %s)", senderAddress.String())
+
+	if callback != nil {
+		go client.SubscribeOrderHistory(marketId, subaccountId, callback)
 	}
 
 	return client, nil
 }
 
-// SubscribeOrderHistory subscribes to order history updates
-func (c *InjectiveClient) SubscribeOrderHistory(callback func([]byte)) {
-	req := &derivativeExchangePB.StreamOrdersHistoryRequest{}
-	stream, err := (*c.updatesClient).StreamOrdersHistory(c.ctx, req)
+func (c *InjectiveClient) GetSenderAddress() string {
+    return "" // Empty string since we just need to use the client
+}
+
+func (c *InjectiveClient) SubscribeOrderHistory(
+	marketId, subaccountId string, 
+	callback func([]byte),
+) {
+	req := &derivativeExchangePB.StreamOrdersHistoryRequest{
+		MarketId:     marketId,
+		SubaccountId: subaccountId,
+		Direction:    "buy",
+	}
+
+	stream, err := c.updatesClient.StreamHistoricalDerivativeOrders(c.ctx, req)
 	if err != nil {
-		log.Printf("Failed to stream order history: %v", err)
+		log.Printf("Failed to stream orders: %v", err)
 		return
 	}
 
@@ -71,12 +110,12 @@ func (c *InjectiveClient) SubscribeOrderHistory(callback func([]byte)) {
 		default:
 			res, err := stream.Recv()
 			if err != nil {
-				log.Printf("Error receiving order history: %v", err)
+				log.Printf("Error receiving order: %v", err)
 				return
 			}
 			data, err := json.Marshal(res)
 			if err != nil {
-				log.Printf("Error marshaling response: %v", err)
+				log.Printf("Error marshaling: %v", err)
 				continue
 			}
 			callback(data)
@@ -84,9 +123,3 @@ func (c *InjectiveClient) SubscribeOrderHistory(callback func([]byte)) {
 	}
 }
 
-// PlaceOrder executes a trade using the chain client
-func (c *InjectiveClient) PlaceOrder(order *chain.Order) error {
-	log.Printf("Placing order for sender %s", c.senderAddress)
-	// Placeholder: Add actual order placement logic here
-	return nil
-}
