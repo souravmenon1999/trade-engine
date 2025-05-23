@@ -5,9 +5,10 @@ bybitOrderbook:
   quote_currency: "USDT"
 
 bybitExchangeClient:
-  ws_url: "wss://stream.bybit.com/v5/private"
-  api_key: "your_bybit_api_key"      # Replace with your Bybit API key
-  api_secret: "your_bybit_api_secret" # Replace with your Bybit API secret
+  trading_ws_url: "wss://stream.bybit.com/v5/trade"    # WebSocket for trading (orders)
+  updates_ws_url: "wss://stream.bybit.com/v5/private"
+  api_key: "5audz0lEsFqIDQgQbN"
+  api_secret: "zXKppDu7dxUT0LcVfGR0CmHwbIoNDabAFbuH"
 
 order:
   quantity: 1

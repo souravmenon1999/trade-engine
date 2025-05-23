@@ -8,7 +8,7 @@ require (
 	github.com/InjectiveLabs/sdk-go v1.57.0
 	github.com/cometbft/cometbft v0.38.11
 	github.com/gorilla/websocket v1.5.3
-	github.com/rs/zerolog v1.33.0
+	github.com/rs/zerolog v1.34.0
 	github.com/spf13/viper v1.19.0
 )
 

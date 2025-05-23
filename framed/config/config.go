@@ -22,9 +22,10 @@ type BybitOrderbookConfig struct {
 }
 
 type BybitExchangeClientConfig struct {
-	WSUrl     string `mapstructure:"ws_url"`
-	APIKey    string `mapstructure:"api_key"`
-	APISecret string `mapstructure:"api_secret"`
+	TradingWSUrl string `mapstructure:"trading_ws_url"` // Added for trading WebSocket
+	UpdatesWSUrl string `mapstructure:"updates_ws_url"` // Added for updates WebSocket
+	APIKey       string `mapstructure:"api_key"`
+	APISecret    string `mapstructure:"api_secret"`
 }
 
 type OrderConfig struct {
