@@ -133,6 +133,16 @@ func (c *BybitWSClient) ReadMessage() ([]byte, error) {
     return message, nil
 }
 
+func (c *BybitWSClient) GetApiKey() string {
+    return c.apiKey
+}
+
+// GetApiSecret returns the API secret stored in BybitWSClient.
+func (c *BybitWSClient) GetApiSecret() string {
+    return c.apiSecret
+}
+
+
 // Close terminates the WebSocket connection
 func (c *BybitWSClient) Close() {
     c.mu.Lock()
