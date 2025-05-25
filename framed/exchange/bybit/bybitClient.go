@@ -115,6 +115,15 @@ func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
     }
     zerologlog.Info().Str("topic", "execution.fast").Msg("Subscribed to execution.fast WebSocket topic")
 
+
+	// New subscription: Wallet (account margin updates)
+    if err := c.SubscribeUpdates("wallet", func(data []byte) {
+        zerologlog.Info().Msgf("Received account margin update: %s", string(data))
+    }); err != nil {
+        return fmt.Errorf("failed to subscribe to wallet topic: %w", err)
+    }
+    zerologlog.Info().Str("topic", "wallet").Msg("Subscribed to account margin updates")
+
 	return nil
 }
 

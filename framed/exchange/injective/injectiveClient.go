@@ -5,18 +5,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-
+	"time"
+"strings"
 	chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
 	exchangeclient "github.com/InjectiveLabs/sdk-go/client/exchange"
 	"github.com/InjectiveLabs/sdk-go/client/common"
+	exchangetypes "github.com/InjectiveLabs/sdk-go/chain/exchange/types"
 	derivativeExchangePB "github.com/InjectiveLabs/sdk-go/exchange/derivative_exchange_rpc/pb"
 	"github.com/cometbft/cometbft/rpc/client/http"
+	"github.com/shopspring/decimal"
+	"github.com/google/uuid"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/client"
 )
 
 type InjectiveClient struct {
-	tradeClient   chainclient.ChainClient // Changed to value type
-	updatesClient exchangeclient.ExchangeClient // Changed to value type (interface)
+	tradeClient   chainclient.ChainClient
+	updatesClient exchangeclient.ExchangeClient
 	senderAddress string
+	clientCtx     client.Context
 	ctx           context.Context
 	cancel        context.CancelFunc
 }
@@ -69,6 +76,7 @@ func NewInjectiveClient(
 		tradeClient:   tradeClient,
 		updatesClient: updatesClient,
 		senderAddress: senderAddress.String(),
+		clientCtx:     clientCtx,
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -84,7 +92,173 @@ func NewInjectiveClient(
 }
 
 func (c *InjectiveClient) GetSenderAddress() string {
-    return "" // Empty string since we just need to use the client
+	return c.senderAddress
+}
+
+// SendOrder - This is the missing method that creates and sends a derivative order
+func (c *InjectiveClient) SendOrder(
+	marketId, subaccountId, side string,
+	price, quantity, leverage decimal.Decimal,
+) error {
+	log.Printf("📝 Creating %s order: Price=%s, Qty=%s, Leverage=%s", 
+		side, price.String(), quantity.String(), leverage.String())
+
+	// Set up markets assistant for order creation
+	marketsAssistant, err := chainclient.NewMarketsAssistant(c.ctx, c.tradeClient)
+	if err != nil {
+		return fmt.Errorf("failed to create markets assistant: %w", err)
+	}
+
+	// Determine order type based on side
+	var orderType exchangetypes.OrderType
+	switch side {
+	case "buy":
+		orderType = exchangetypes.OrderType_BUY
+	case "sell":
+		orderType = exchangetypes.OrderType_SELL
+	default:
+		return fmt.Errorf("invalid order side: %s (must be 'buy' or 'sell')", side)
+	}
+
+	// Set gas price with adjustment
+	gasPrice := c.tradeClient.CurrentChainGasPrice()
+	gasPrice = int64(float64(gasPrice) * 1.1) // 10% buffer
+	c.tradeClient.SetGasPrice(gasPrice)
+
+	// Parse subaccount ID to proper Hash format
+	senderAddress, err := sdk.AccAddressFromBech32(c.senderAddress)
+	if err != nil {
+		return fmt.Errorf("failed to parse sender address: %w", err)
+	}
+	defaultSubaccountID := c.tradeClient.DefaultSubaccount(senderAddress)
+
+	// Create the derivative order
+	order := c.tradeClient.CreateDerivativeOrder(
+		defaultSubaccountID,
+		&chainclient.DerivativeOrderData{
+			OrderType:    orderType,
+			Quantity:     quantity,
+			Price:        price,
+			Leverage:     leverage,
+			FeeRecipient: c.senderAddress,
+			MarketId:     marketId,
+			IsReduceOnly: false, // Set to true if you want reduce-only orders
+			Cid:          uuid.NewString(),
+		},
+		marketsAssistant,
+	)
+
+	// Create the message
+	msg := &exchangetypes.MsgCreateDerivativeLimitOrder{
+		Sender: c.senderAddress,
+		Order:  exchangetypes.DerivativeOrder(*order),
+	}
+
+	// Simulate the transaction first
+	log.Println("🔄 Simulating transaction...")
+	simRes, err := c.tradeClient.SimulateMsg(c.clientCtx, msg)
+	if err != nil {
+		return fmt.Errorf("simulation failed: %w", err)
+	}
+
+	// Parse simulation response
+	msgCreateDerivativeLimitOrderResponse := exchangetypes.MsgCreateDerivativeLimitOrderResponse{}
+	err = msgCreateDerivativeLimitOrderResponse.Unmarshal(simRes.Result.MsgResponses[0].Value)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal simulation response: %w", err)
+	}
+
+	log.Printf("✅ Simulation successful, Order Hash: %s", msgCreateDerivativeLimitOrderResponse.OrderHash)
+
+	// Broadcast the transaction
+	log.Println("📡 Broadcasting transaction...")
+	err = c.tradeClient.QueueBroadcastMsg(msg)
+	if err != nil {
+		return fmt.Errorf("failed to broadcast message: %w", err)
+	}
+
+	// Wait a bit for transaction processing
+	time.Sleep(time.Second * 3)
+
+	// Get gas fee information
+	gasFee, err := c.tradeClient.GetGasFee()
+	if err != nil {
+		log.Printf("⚠️  Could not retrieve gas fee: %v", err)
+	} else {
+		log.Printf("⛽ Gas fee: %s INJ", gasFee)
+	}
+
+	log.Println("🎉 Order sent successfully!")
+	return nil
+}
+
+
+// CancelOrder cancels an existing derivative order
+// CancelOrder cancels an existing derivative order with proper logging
+// CancelOrder cancels an existing derivative order with full validation
+func (c *InjectiveClient) CancelOrder(
+    marketId string, 
+    orderHash string,
+) error {
+    log.Println("📝 Starting order cancellation")
+    
+    // Convert hash to lowercase
+    orderHash = strings.ToLower(orderHash)
+
+    // Get subaccount ID (same method as SendOrder)
+    senderAddress, err := sdk.AccAddressFromBech32(c.senderAddress)
+    if err != nil {
+        return fmt.Errorf("failed to parse sender address: %w", err)
+    }
+    subaccountId := c.tradeClient.DefaultSubaccount(senderAddress).Hex()
+
+    // Set gas price with buffer (mirroring SendOrder)
+    gasPrice := c.tradeClient.CurrentChainGasPrice()
+    gasPrice = int64(float64(gasPrice) * 1.1)
+    c.tradeClient.SetGasPrice(gasPrice)
+
+    // Create cancellation message
+    msg := &exchangetypes.MsgCancelDerivativeOrder{
+        Sender:       c.senderAddress,
+        MarketId:     marketId,
+        SubaccountId: subaccountId,
+        OrderHash:    orderHash,
+    }
+
+    // Simulate transaction
+    log.Println("🔄 Simulating cancellation...")
+    simRes, err := c.tradeClient.SimulateMsg(c.clientCtx, msg)
+    if err != nil {
+        log.Printf("❌ Simulation failed: %v", err)
+        return fmt.Errorf("simulation failed: %w", err)
+    }
+
+    // Check simulation result (new addition)
+    if simRes.GasInfo.GasUsed == 0 {
+        return fmt.Errorf("invalid simulation result - gas used cannot be zero")
+    }
+
+    // Broadcast transaction
+    log.Println("📡 Broadcasting cancellation...")
+    err = c.tradeClient.QueueBroadcastMsg(msg)
+    if err != nil {
+        log.Printf("🔥 Broadcast failed: %v", err)
+        return fmt.Errorf("broadcast failed: %w", err)
+    }
+
+    // Wait for processing (same as SendOrder)
+    time.Sleep(time.Second * 2)
+
+    // Get gas fee info (mirroring SendOrder)
+    gasFee, err := c.tradeClient.GetGasFee()
+    if err != nil {
+        log.Printf("⚠️  Could not retrieve gas fee: %v", err)
+    } else {
+        log.Printf("⛽ Gas fee: %s INJ", gasFee)
+    }
+
+    log.Println("🎉 Cancellation successful!")
+    return nil
 }
 
 func (c *InjectiveClient) SubscribeOrderHistory(
@@ -123,3 +297,9 @@ func (c *InjectiveClient) SubscribeOrderHistory(
 	}
 }
 
+// Close properly shuts down the client
+func (c *InjectiveClient) Close() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+}
