@@ -80,6 +80,15 @@ func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 		return fmt.Errorf("failed to subscribe to public topic %s: %w", orderBookTopic, err)
 	}
 	zerologlog.Info().Str("topic", orderBookTopic).Msg("Subscribed to public WebSocket topic with logging callback")
+	
+	tickersTopic := "tickers." + cfg.BybitOrderbook.Symbol
+    if err := c.SubscribePublic(tickersTopic, func(data []byte) {
+        zerologlog.Info().Msgf("Received funding rate update for %s: %s", cfg.BybitOrderbook.Symbol, string(data))
+    }); err != nil {
+        return fmt.Errorf("failed to subscribe to %s: %w", tickersTopic, err)
+    }
+    zerologlog.Info().Str("topic", tickersTopic).Msg("Subscribed to funding rate updates")
+
 
 	// Trading WebSocket: Order updates
 	if err := c.SubscribeTrading("order", func(data []byte) {
@@ -96,6 +105,15 @@ func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 		return fmt.Errorf("failed to subscribe to updates topic position: %w", err)
 	}
 	zerologlog.Info().Str("topic", "position").Msg("Subscribed to updates WebSocket topic")
+
+
+	 // New subscription: execution.fast
+    if err := c.SubscribeUpdates("execution.fast", func(data []byte) {
+        zerologlog.Info().Msgf("Received execution.fast update: %s", string(data))
+    }); err != nil {
+        return fmt.Errorf("failed to subscribe to execution.fast topic: %w", err)
+    }
+    zerologlog.Info().Str("topic", "execution.fast").Msg("Subscribed to execution.fast WebSocket topic")
 
 	return nil
 }
