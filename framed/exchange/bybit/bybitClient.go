@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
+"github.com/google/uuid"
 	zerologlog "github.com/rs/zerolog/log"
 	"github.com/souravmenon1999/trade-engine/framed/config"
 	bybitWS "github.com/souravmenon1999/trade-engine/framed/exchange/net/websockets/bybit"
@@ -21,6 +21,7 @@ type BybitClient struct {
 	tradingWS *bybitWS.BybitWSClient
 	updatesWS *bybitWS.BybitWSClient
 	subs      sync.Map
+	symbol    string
 }
 
 // NewBybitClient creates and initializes a Bybit client, automatically connecting,
@@ -32,6 +33,7 @@ func NewBybitClient(cfg *config.Config) *BybitClient {
 		tradingWS: bybitWS.NewBybitWSClient(cfg.BybitExchangeClient.TradingWSUrl, cfg.BybitExchangeClient.APIKey, cfg.BybitExchangeClient.APISecret, "trading"),
 		updatesWS: bybitWS.NewBybitWSClient(cfg.BybitExchangeClient.UpdatesWSUrl, cfg.BybitExchangeClient.APIKey, cfg.BybitExchangeClient.APISecret, "updates"),
 		subs:      sync.Map{},
+		symbol:    cfg.BybitOrderbook.Symbol,
 	}
 	zerologlog.Info().Msg("BybitClient initialized with WebSocket configurations")
 
@@ -254,91 +256,86 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 }
 
 // SendOrder sends a trading order (unchanged)
-func (c *BybitClient) SendOrder(order *types.Order) error {
-	timestamp := time.Now().UnixMilli()
-	recvWindow := 5000
-	signature := c.generateSignature(fmt.Sprintf("%d%d", timestamp, recvWindow))
+func (c *BybitClient) SendOrder(order *types.Order) (string, error) {
+    timestamp := time.Now().UnixMilli()
+    recvWindow := 5000
+    signature := c.generateSignature(fmt.Sprintf("%d%d", timestamp, recvWindow))
 
-	orderMsg := map[string]interface{}{
-		"op": "order.create",
-		"args": []interface{}{
-			map[string]interface{}{
-				"symbol":      order.Instrument.BaseCurrency + order.Instrument.QuoteCurrency,
-				"side":        order.Side,
-				"orderType":   "Limit",
-				"qty":         ".01",
-				"price":       fmt.Sprintf("%d", order.Price.Load()),
-				"category":    "linear",
-				"timeInForce": "GTC",
-			},
-		},
-		"header": map[string]interface{}{
-			"X-BAPI-TIMESTAMP":   timestamp,
-			"X-BAPI-RECV-WINDOW": recvWindow,
-			"X-BAPI-SIGN":        signature,
-			"X-BAPI-API-KEY":     c.tradingWS.GetApiKey(), // Updated line
-		},
-	}
+    orderMsg := map[string]interface{}{
+        "op": "order.create",
+        "args": []interface{}{
+            map[string]interface{}{
+                "symbol":      order.Instrument.BaseCurrency + order.Instrument.QuoteCurrency,
+                "side":        order.Side,
+                "orderType":   "Limit",
+                "qty":         ".01",
+                "price":       fmt.Sprintf("%d", order.Price.Load()),
+                "category":    "linear",
+                "timeInForce": "GTC",
+            },
+        },
+        "header": map[string]interface{}{
+            "X-BAPI-TIMESTAMP":   timestamp,
+            "X-BAPI-RECV-WINDOW": recvWindow,
+            "X-BAPI-SIGN":        signature,
+            "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
+        },
+    }
 
-	orderJSON, _ := json.Marshal(orderMsg)
-	zerologlog.Debug().Str("order_message", string(orderJSON)).Msg("Sending order to Bybit")
-	if err := c.tradingWS.SendJSON(orderMsg); err != nil {
-		zerologlog.Error().Err(err).Msg("Failed to send order")
-		return fmt.Errorf("failed to send order: %w", err)
-	}
-	zerologlog.Info().Msgf("Order sent for %s", order.Instrument.BaseCurrency+order.Instrument.QuoteCurrency)
-	zerologlog.Info().Msgf("Ordeer MSg %s", orderMsg)
+    orderJSON, _ := json.Marshal(orderMsg)
+zerologlog.Debug().Str("order_message", string(orderJSON)).Msg("Sending order to Bybit")
+    if err := c.tradingWS.SendJSON(orderMsg); err != nil {
+zerologlog.Error().Err(err).Msg("Failed to send order")
+		return "", fmt.Errorf("failed to send order: %w", err)
+    }
+    zerologlog.Info().Msgf("Order sent for %s", order.Instrument.BaseCurrency+order.Instrument.QuoteCurrency)
 
-	return nil
+    // Generate a temporary order ID
+    tempOrderID := fmt.Sprintf("bybit-%s", uuid.New().String())
+    return tempOrderID, nil
 }
 
-// func (c *BybitClient) CancelOrder(orderId, symbol string) error { // Add symbol parameter
-//     timestamp := time.Now().UnixMilli()
-//     recvWindow := 5000
-//     toSign := fmt.Sprintf("%d%d", timestamp, recvWindow)
-//     signature := c.generateSignature(toSign)
+func (c *BybitClient) CancelOrder(orderID string) error {
+    timestamp := time.Now().UnixMilli()
+    recvWindow := 5000
+    toSign := fmt.Sprintf("%d%d", timestamp, recvWindow)
+    signature := c.generateSignature(toSign)
 
-//     type CancelArg struct {
-//         OrderID  string `json:"orderId"`
-//         Category string `json:"category"`
-//         Symbol   string `json:"symbol"` // Add symbol to args
-//     }
-//     cancelMsg := struct {
-//         OP     string        `json:"op"`
-//         Args   []CancelArg   `json:"args"`
-//         Header map[string]interface{} `json:"header"`
-//     }{
-//         OP: "order.cancel",
-//         Args: []CancelArg{
-//             {
-//                 OrderID:  orderId,
-//                 Category: "linear",
-//                 Symbol:   symbol, // Include symbol from parameters
-//             },
-//         },
-//         Header: map[string]interface{}{
-//             "X-BAPI-TIMESTAMP":   timestamp,
-//             "X-BAPI-RECV-WINDOW": recvWindow,
-//             "X-BAPI-SIGN":        signature,
-//             "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
-//         },
-//     }
+    cancelMsg := struct {
+        OP     string        `json:"op"`
+        Args   []interface{} `json:"args"`
+        Header map[string]interface{} `json:"header"`
+    }{
+        OP: "order.cancel",
+        Args: []interface{}{
+            map[string]interface{}{
+                "orderId":  orderID,
+                "category": "linear", // Adjust if needed (e.g., "spot" for spot trading)
+                "symbol":   c.symbol,
+            },
+        },
+        Header: map[string]interface{}{
+            "X-BAPI-TIMESTAMP":   timestamp,
+            "X-BAPI-RECV-WINDOW": recvWindow,
+            "X-BAPI-SIGN":        signature,
+            "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
+        },
+    }
 
-//     cancelJSON, err := json.Marshal(cancelMsg)
-//     if err != nil {
-//         zerologlog.Error().Err(err).Msg("Failed to marshal cancel order message")
-//         return fmt.Errorf("failed to marshal cancel order: %w", err)
-//     }
+    cancelJSON, err := json.Marshal(cancelMsg)
+    if err != nil {
+        zerologlog.Error().Err(err).Msg("Failed to marshal cancel order message")
+        return fmt.Errorf("failed to marshal cancel order: %w", err)
+    }
 
-//     zerologlog.Debug().Str("cancel_message", string(cancelJSON)).Msg("Sending cancel order to Bybit")
-//     if err := c.tradingWS.SendJSON(cancelMsg); err != nil {
-//         zerologlog.Error().Err(err).Msg("Failed to send cancel order")
-//         return fmt.Errorf("failed to send cancel order: %w", err)
-//     }
-//     zerologlog.Info().Str("orderId", orderId).Str("symbol", symbol).Msg("Cancel order request sent")
-//     return nil
-// }
-
+    zerologlog.Debug().Str("cancel_message", string(cancelJSON)).Msg("Sending cancel order to Bybit")
+    if err := c.tradingWS.SendJSON(cancelMsg); err != nil {
+        zerologlog.Error().Err(err).Msg("Failed to send cancel order")
+        return fmt.Errorf("failed to send cancel order: %w", err)
+    }
+    zerologlog.Info().Str("orderId", orderID).Str("symbol", c.symbol).Msg("Cancel order request sent")
+    return nil
+}
 
 func (c *BybitClient) AmendOrder(symbol, orderId string, newPrice, newQty int64) error {
     // Generate timestamp and signature
@@ -369,7 +366,7 @@ func (c *BybitClient) AmendOrder(symbol, orderId string, newPrice, newQty int64)
                 Category: "linear",
                 Symbol:   symbol,
                 Price:    fmt.Sprintf("%d", newPrice),
-                Qty:      fmt.Sprintf("%s", ".01"),
+                Qty:      ".01",
             },
         },
         Header: map[string]interface{}{

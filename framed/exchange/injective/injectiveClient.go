@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/client"
+	"github.com/souravmenon1999/trade-engine/framed/types"
 )
 
 // InjectiveClient manages connections and subscriptions for Injective Protocol
@@ -27,6 +28,8 @@ type InjectiveClient struct {
 	clientCtx     client.Context
 	ctx           context.Context
 	cancel        context.CancelFunc
+	marketId      string
+    subaccountId  string
 }
 
 // NewInjectiveClient creates and initializes a new Injective client with callbacks for order history and funding rates
@@ -79,6 +82,9 @@ log.Printf("reached beof tradeclient")
 		clientCtx:     clientCtx,
 		ctx:           ctx,
 		cancel:        cancel,
+		marketId:      marketId,     // Add this
+    subaccountId:  subaccountId,
+
 	}
 
 	log.Printf("🚀 Injective client fully initialized (Sender: %s)", senderAddress.String())
@@ -194,147 +200,121 @@ func (c *InjectiveClient) GetSenderAddress() string {
 
 
 // SendOrder creates and sends a derivative order
-func (c *InjectiveClient) SendOrder(
-	marketId, subaccountId, side string,
-	price, quantity, leverage decimal.Decimal,
-) error {
-	log.Printf("📝 Creating %s order: Price=%s, Qty=%s, Leverage=%s",
-		side, price.String(), quantity.String(), leverage.String())
+func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
+    price := decimal.NewFromInt(order.Price.Load())
+    quantity := decimal.NewFromFloat(order.Quantity.ToFloat64())
+    leverage := decimal.NewFromInt(1) // Adjust as needed
 
-	marketsAssistant, err := chainclient.NewMarketsAssistant(c.ctx, c.tradeClient)
-	if err != nil {
-		return fmt.Errorf("failed to create markets assistant: %w", err)
-	}
+    marketsAssistant, err := chainclient.NewMarketsAssistant(c.ctx, c.tradeClient)
+    if err != nil {
+        return "", fmt.Errorf("failed to create markets assistant: %w", err)
+    }
 
-	var orderType exchangetypes.OrderType
-	switch side {
-	case "buy":
-		orderType = exchangetypes.OrderType_BUY
-	case "sell":
-		orderType = exchangetypes.OrderType_SELL
-	default:
-		return fmt.Errorf("invalid order side: %s (must be 'buy' or 'sell')", side)
-	}
+    orderType := exchangetypes.OrderType_BUY
+    if order.Side == "sell" {
+        orderType = exchangetypes.OrderType_SELL
+    }
 
-	gasPrice := c.tradeClient.CurrentChainGasPrice()
-	gasPrice = int64(float64(gasPrice) * 1.1)
-	c.tradeClient.SetGasPrice(gasPrice)
+    gasPrice := c.tradeClient.CurrentChainGasPrice()
+    c.tradeClient.SetGasPrice(int64(float64(gasPrice) * 1.1))
 
-	senderAddress, err := sdk.AccAddressFromBech32(c.senderAddress)
-	if err != nil {
-		return fmt.Errorf("failed to parse sender address: %w", err)
-	}
-	defaultSubaccountID := c.tradeClient.DefaultSubaccount(senderAddress)
+    senderAddress, err := sdk.AccAddressFromBech32(c.senderAddress)
+    if err != nil {
+        return "", fmt.Errorf("failed to parse sender address: %w", err)
+    }
+    defaultSubaccountID := c.tradeClient.DefaultSubaccount(senderAddress)
 
-	order := c.tradeClient.CreateDerivativeOrder(
-		defaultSubaccountID,
-		&chainclient.DerivativeOrderData{
-			OrderType:    orderType,
-			Quantity:     quantity,
-			Price:        price,
-			Leverage:     leverage,
-			FeeRecipient: c.senderAddress,
-			MarketId:     marketId,
-			IsReduceOnly: false,
-			Cid:          uuid.NewString(),
-		},
-		marketsAssistant,
-	)
+    orderData := c.tradeClient.CreateDerivativeOrder(
+        defaultSubaccountID,
+        &chainclient.DerivativeOrderData{
+            OrderType:    orderType,
+            Quantity:     quantity,
+            Price:        price,
+            Leverage:     leverage,
+            FeeRecipient: c.senderAddress,
+            MarketId:     c.marketId,
+            IsReduceOnly: false,
+            Cid:          uuid.NewString(),
+        },
+        marketsAssistant,
+    )
 
-	msg := &exchangetypes.MsgCreateDerivativeLimitOrder{
-		Sender: c.senderAddress,
-		Order:  exchangetypes.DerivativeOrder(*order),
-	}
+    msg := &exchangetypes.MsgCreateDerivativeLimitOrder{
+        Sender: c.senderAddress,
+        Order:  exchangetypes.DerivativeOrder(*orderData),
+    }
 
-	log.Println("🔄 Simulating transaction...")
-	simRes, err := c.tradeClient.SimulateMsg(c.clientCtx, msg)
-	if err != nil {
-		return fmt.Errorf("simulation failed: %w", err)
-	}
+    simRes, err := c.tradeClient.SimulateMsg(c.clientCtx, msg)
+    if err != nil {
+        return "", fmt.Errorf("simulation failed: %w", err)
+    }
 
-	msgCreateDerivativeLimitOrderResponse := exchangetypes.MsgCreateDerivativeLimitOrderResponse{}
-	err = msgCreateDerivativeLimitOrderResponse.Unmarshal(simRes.Result.MsgResponses[0].Value)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal simulation response: %w", err)
-	}
+    var response exchangetypes.MsgCreateDerivativeLimitOrderResponse
+    if err := response.Unmarshal(simRes.Result.MsgResponses[0].Value); err != nil {
+        return "", fmt.Errorf("failed to unmarshal simulation response: %w", err)
+    }
 
-	log.Printf("✅ Simulation successful, Order Hash: %s", msgCreateDerivativeLimitOrderResponse.OrderHash)
+    if err := c.tradeClient.QueueBroadcastMsg(msg); err != nil {
+        return "", fmt.Errorf("failed to broadcast message: %w", err)
+    }
 
-	log.Println("📡 Broadcasting transaction...")
-	err = c.tradeClient.QueueBroadcastMsg(msg)
-	if err != nil {
-		return fmt.Errorf("failed to broadcast message: %w", err)
-	}
-
-	time.Sleep(time.Second * 3)
-
-	gasFee, err := c.tradeClient.GetGasFee()
-	if err != nil {
-		log.Printf("⚠️  Could not retrieve gas fee: %v", err)
-	} else {
-		log.Printf("⛽ Gas fee: %s INJ", gasFee)
-	}
-
-	log.Println("🎉 Order sent successfully!")
-	return nil
+    time.Sleep(time.Second * 3)
+    log.Printf("Order sent successfully, Order Hash: %s", response.OrderHash)
+    return response.OrderHash, nil
 }
 
-
 // CancelOrder cancels an existing derivative order
-func (c *InjectiveClient) CancelOrder(
-	marketId string,
-	orderHash string,
-) error {
-	log.Println("📝 Starting order cancellation")
+func (c *InjectiveClient) CancelOrder(orderHash string) error {
+    log.Println("📝 Starting order cancellation")
 
-	orderHash = strings.ToLower(orderHash)
+    orderHash = strings.ToLower(orderHash)
 
-	senderAddress, err := sdk.AccAddressFromBech32(c.senderAddress)
-	if err != nil {
-		return fmt.Errorf("failed to parse sender address: %w", err)
-	}
-	subaccountId := c.tradeClient.DefaultSubaccount(senderAddress).Hex()
+    senderAddress, err := sdk.AccAddressFromBech32(c.senderAddress)
+    if err != nil {
+        return fmt.Errorf("failed to parse sender address: %w", err)
+    }
+    subaccountId := c.tradeClient.DefaultSubaccount(senderAddress).Hex()
 
-	gasPrice := c.tradeClient.CurrentChainGasPrice()
-	gasPrice = int64(float64(gasPrice) * 1.1)
-	c.tradeClient.SetGasPrice(gasPrice)
+    gasPrice := c.tradeClient.CurrentChainGasPrice()
+    gasPrice = int64(float64(gasPrice) * 1.1)
+    c.tradeClient.SetGasPrice(gasPrice)
 
-	msg := &exchangetypes.MsgCancelDerivativeOrder{
-		Sender:       c.senderAddress,
-		MarketId:     marketId,
-		SubaccountId: subaccountId,
-		OrderHash:    orderHash,
-	}
+    msg := &exchangetypes.MsgCancelDerivativeOrder{
+        Sender:       c.senderAddress,
+        MarketId:     c.marketId, // Use the stored marketId from the client
+        SubaccountId: subaccountId,
+        OrderHash:    orderHash,
+    }
 
-	log.Println("🔄 Simulating cancellation...")
-	simRes, err := c.tradeClient.SimulateMsg(c.clientCtx, msg)
-	if err != nil {
-		log.Printf("❌ Simulation failed: %v", err)
-		return fmt.Errorf("simulation failed: %w", err)
-	}
+    log.Println("🔄 Simulating cancellation...")
+    simRes, err := c.tradeClient.SimulateMsg(c.clientCtx, msg)
+    if err != nil {
+        log.Printf("❌ Simulation failed: %v", err)
+        return fmt.Errorf("simulation failed: %w", err)
+    }
 
-	if simRes.GasInfo.GasUsed == 0 {
-		return fmt.Errorf("invalid simulation result - gas used cannot be zero")
-	}
+    if simRes.GasInfo.GasUsed == 0 {
+        return fmt.Errorf("invalid simulation result - gas used cannot be zero")
+    }
 
-	log.Println("📡 Broadcasting cancellation...")
-	err = c.tradeClient.QueueBroadcastMsg(msg)
-	if err != nil {
-		log.Printf("🔥 Broadcast failed: %v", err)
-		return fmt.Errorf("broadcast failed: %w", err)
-	}
+    log.Println("📡 Broadcasting cancellation...")
+    err = c.tradeClient.QueueBroadcastMsg(msg)
+    if err != nil {
+        log.Printf("🔥 Broadcast failed: %v", err)
+        return fmt.Errorf("broadcast failed: %w", err)
+    }
 
-	time.Sleep(time.Second * 2)
+    time.Sleep(time.Second * 2)
 
-	gasFee, err := c.tradeClient.GetGasFee()
-	if err != nil {
-		log.Printf("⚠️  Could not retrieve gas fee: %v", err)
-	} else {
-		log.Printf("⛽ Gas fee: %s INJ", gasFee)
-	}
+    gasFee, err := c.tradeClient.GetGasFee()
+    if err != nil {
+        log.Printf("⚠️ Could not retrieve gas fee: %v", err)
+    } else {
+        log.Printf("⛽ Gas fee: %s INJ", gasFee)
+    }
 
-	log.Println("🎉 Cancellation successful!")
-	return nil
+    log.Println("🎉 Cancellation successful!")
+    return nil
 }
 
 // SubscribeOrderHistory subscribes to order history updates and calls the callback with order data

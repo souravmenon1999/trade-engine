@@ -25,10 +25,10 @@ func (om *OrderManager) PlaceOrder(order *types.Order) (string, error) {
     if ex == nil {
         return "", fmt.Errorf("no exchange found for ID: %s", order.ExchangeID)
     }
-    return ex.PlaceOrder(order)
+    return ex.SendOrder(order)
 }
 
-func (om *OrderManager) CancelOrder(orderID string, exchangeID types.ExchangeID) error {
+func (om *OrderManager) CancelOrder(exchangeID types.ExchangeID, orderID string) error {
     ex := om.exchanges[exchangeID]
     if ex == nil {
         return fmt.Errorf("no exchange found for ID: %s", exchangeID)
