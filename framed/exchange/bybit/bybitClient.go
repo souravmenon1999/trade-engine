@@ -81,13 +81,13 @@ func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 	}
 	zerologlog.Info().Str("topic", orderBookTopic).Msg("Subscribed to public WebSocket topic with logging callback")
 	
-	tickersTopic := "tickers." + cfg.BybitOrderbook.Symbol
-    if err := c.SubscribePublic(tickersTopic, func(data []byte) {
-        zerologlog.Info().Msgf("Received funding rate update for %s: %s", cfg.BybitOrderbook.Symbol, string(data))
-    }); err != nil {
-        return fmt.Errorf("failed to subscribe to %s: %w", tickersTopic, err)
-    }
-    zerologlog.Info().Str("topic", tickersTopic).Msg("Subscribed to funding rate updates")
+	// tickersTopic := "tickers." + cfg.BybitOrderbook.Symbol
+    // if err := c.SubscribePublic(tickersTopic, func(data []byte) {
+    //     zerologlog.Info().Msgf("Received funding rate update for %s: %s", cfg.BybitOrderbook.Symbol, string(data))
+    // }); err != nil {
+    //     return fmt.Errorf("failed to subscribe to %s: %w", tickersTopic, err)
+    // }
+    // zerologlog.Info().Str("topic", tickersTopic).Msg("Subscribed to funding rate updates")
 
 
 	// Trading WebSocket: Order updates
@@ -211,7 +211,7 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 		zerologlog.Error().Err(err).Str("ws_type", wsType).Str("raw_message", string(message)).Msg("Error unmarshaling message")
 		return
 	}
-	zerologlog.Debug().Str("ws_type", wsType).Interface("message", msg).Msg("Received WebSocket message")
+	// zerologlog.Debug().Str("ws_type", wsType).Interface("message", msg).Msg("Received WebSocket message")
 
 	if op, ok := msg["op"].(string); ok {
 		switch op {
@@ -247,7 +247,7 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 	}
 	if callback, ok := c.subs.Load(topic); ok {
 		go callback.(func([]byte))(message)
-		zerologlog.Debug().Str("ws_type", wsType).Str("topic", topic).Msg("Dispatched message to callback")
+		// zerologlog.Debug().Str("ws_type", wsType).Str("topic", topic).Msg("Dispatched message to callback")
 	} else {
 		zerologlog.Warn().Str("ws_type", wsType).Str("topic", topic).Msg("No callback for topic")
 	}

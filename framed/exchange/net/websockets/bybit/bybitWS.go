@@ -129,7 +129,7 @@ func (c *BybitWSClient) ReadMessage() ([]byte, error) {
         zerologlog.Error().Err(err).Str("wsType", c.wsType).Msg("Failed to read WebSocket message")
         return nil, err
     }
-    zerologlog.Debug().Str("wsType", c.wsType).Msg("Successfully read WebSocket message")
+    // zerologlog.Debug().Str("wsType", c.wsType).Msg("Successfully read WebSocket message")
     return message, nil
 }
 

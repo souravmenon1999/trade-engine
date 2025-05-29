@@ -58,16 +58,16 @@ func main() {
     // log.Info().Str("topic", orderBookTopic).Msg("VWAP processor subscribed to order book topic")
 
     // Injective client setup (unchanged)
-    orderUpdateCallback := func(data []byte) {
-        log.Info().Msgf("Received Injective order history update: %s", string(data))
-    }
+    // orderUpdateCallback := func(data []byte) {
+    //     log.Info().Msgf("Received Injective order history update: %s", string(data))
+    // }
     injectiveClient, err := injective.NewInjectiveClient(
         cfg.InjectiveExchange.NetworkName,
         cfg.InjectiveExchange.Lb,
         cfg.InjectiveExchange.PrivKey,
         cfg.InjectiveExchange.MarketId,
         cfg.InjectiveExchange.SubaccountId,
-        orderUpdateCallback,
+    
     )
     if err != nil {
         log.Fatal().Err(err).Msg("Failed to initialize Injective client")
