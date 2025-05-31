@@ -1,11 +1,13 @@
 package types
 
 import (
+	"sync"
 	"sync/atomic"
-	
 )
 
 const SCALE_FACTOR = 1_000_000
+
+
 
 // Price is a struct embedding atomic.Int64 for thread-safe price values.
 type Price struct {
@@ -23,10 +25,6 @@ const (
     ExchangeIDBybit     ExchangeID = "bybit"
     ExchangeIDInjective ExchangeID = "injective"
 )
-
-
-
-
 
 // NewPrice creates a new Price with an initial value and returns a pointer.
 func NewPrice(val int64) *Price {
@@ -58,9 +56,9 @@ type Instrument struct {
 // OrderBook represents the state of an order book with atomic fields.
 type OrderBook struct {
 	Instrument     *Instrument
-	Asks           map[*Price]*Quantity // Maps are not locked as a whole; individual levels updated atomically
-	Bids           map[*Price]*Quantity // Maps are not locked as a whole; individual levels updated atomically
-	LastUpdateTime atomic.Int64         // Atomic for thread-safe updates
+	Asks           sync.Map 
+	Bids           sync.Map 
+	LastUpdateTime atomic.Int64
 	Sequence       atomic.Int64
 	Exchange       *ExchangeID  
 }
@@ -73,9 +71,27 @@ type OrderBookWithVWAP struct {
 
 // Order represents a trading order.
 type Order struct {
-    ExchangeID ExchangeID   // Added ExchangeID
+    ExchangeID ExchangeID
     Instrument *Instrument
     Price      *Price
     Quantity   *Quantity
     Side       string // "Buy" or "Sell"
+}
+
+type OrderStatus string
+
+const (
+	OrderStatusSubmitted      OrderStatus = "submitted"
+	OrderStatusOpen           OrderStatus = "open"
+	OrderStatusPartiallyFilled OrderStatus = "partially_filled"
+	OrderStatusFilled         OrderStatus = "filled"
+	OrderStatusCancelled      OrderStatus = "cancelled"
+	OrderStatusRejected       OrderStatus = "rejected"
+)
+
+type OrderUpdate struct {
+	Order          *Order
+	Status         OrderStatus
+	FilledQuantity *Quantity
+	
 }

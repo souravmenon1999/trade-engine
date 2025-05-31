@@ -11,9 +11,7 @@ import (
     "github.com/souravmenon1999/trade-engine/framed/exchange/bybit"
     "github.com/souravmenon1999/trade-engine/framed/exchange/injective"
     "github.com/souravmenon1999/trade-engine/framed/config"      // Adjust to your config package path
-    "github.com/souravmenon1999/trade-engine/framed/ordermanager" // Adjust to your ordermanager package path
     "github.com/souravmenon1999/trade-engine/framed/strategy"
-	"github.com/souravmenon1999/trade-engine/framed/types"    // Adjust to your strategy package path
 )
 
 func main() {
@@ -31,13 +29,9 @@ func main() {
     }
     log.Info().Msgf("Config loaded: %+v", cfg)
 
-    // Initialize OrderManager
-    om := ordermanager.NewOrderManager()
-
-  
+    
 
     bybitClient := bybit.NewBybitClient(cfg)
-    om.RegisterExchange(types.ExchangeIDBybit, bybitClient)
     log.Info().Msg("Bybit exchange registered")
 
      // Register Injective exchange
@@ -51,13 +45,12 @@ func main() {
     if err != nil {
         log.Fatal().Err(err).Msg("Failed to initialize Injective client")
     }
-    om.RegisterExchange(types.ExchangeIDInjective, injectiveClient)
     log.Info().Msg("Injective exchange registered")
 
   
 
-    // Initialize strategy with OrderManager and Config
-    strat := strategy.NewArbitrageStrategy(om, cfg)
+    // Initialize strategy with exchange clients and config
+    strat := strategy.NewArbitrageStrategy(bybitClient, injectiveClient, cfg)
     go strat.Start()
 
     // Handle shutdown
@@ -67,6 +60,7 @@ func main() {
    defer bybitClient.Close()
     defer injectiveClient.Close()
 
+    
     <-stopCh
     log.Info().Msg("Shutting down...")
 }

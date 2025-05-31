@@ -3,7 +3,7 @@ bybitOrderbook:
   symbol: "ETHUSDT"
   base_currency: "ETH"
   quote_currency: "USDT"
-
+  orderbook_depth: 50
 bybitExchangeClient:
   trading_ws_url: "wss://stream.bybit.com/v5/trade"    # WebSocket for trading (orders)
   updates_ws_url: "wss://stream.bybit.com/v5/private"

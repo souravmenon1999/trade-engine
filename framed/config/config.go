@@ -19,6 +19,7 @@ type BybitOrderbookConfig struct {
 	Symbol        string `mapstructure:"symbol"`
 	BaseCurrency  string `mapstructure:"base_currency"`
 	QuoteCurrency string `mapstructure:"quote_currency"`
+	OrderbookDepth int    `mapstructure:"orderbook_depth"`
 }
 
 type BybitExchangeClientConfig struct {

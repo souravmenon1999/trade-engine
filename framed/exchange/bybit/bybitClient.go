@@ -74,8 +74,12 @@ func (c *BybitClient) Connect() error {
 // SubscribeAll subscribes to predefined topics for all WebSocket clients
 // SubscribeAll subscribes to predefined topics for all WebSocket clients
 func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
+	depth := cfg.BybitOrderbook.OrderbookDepth
+    if depth <= 0 {
+        depth = 50 // Default to 50 if not set or invalid
+    }
 	// Public WebSocket: Order book
-	orderBookTopic := "orderbook.50." + cfg.BybitOrderbook.Symbol
+	orderBookTopic := fmt.Sprintf("orderbook.%d.%s", depth, cfg.BybitOrderbook.Symbol)
 	if err := c.SubscribePublic(orderBookTopic, func(data []byte) {
 		// zerologlog.Info().Msgf("Received order book update: %s", string(data))
 	}); err != nil {
