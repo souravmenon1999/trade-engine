@@ -78,6 +78,7 @@ type Order struct {
     Side       string // "Buy" or "Sell"
 }
 
+// OrderStatus defines the possible states of an order.
 type OrderStatus string
 
 const (
@@ -89,9 +90,9 @@ const (
 	OrderStatusRejected       OrderStatus = "rejected"
 )
 
+// OrderUpdate represents a standardized order update.
 type OrderUpdate struct {
 	Order          *Order
 	Status         OrderStatus
 	FilledQuantity *Quantity
-	
 }

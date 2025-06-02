@@ -24,6 +24,11 @@ type BybitClient struct {
 	symbol    string
 }
 
+func (c *BybitClient) RegisterOrderUpdateCallback(callback func(*types.OrderUpdate)) {
+    zerologlog.Info().Msg("BybitClient does not support order update callbacks yet")
+    // Placeholder: no action taken for now
+}
+
 // NewBybitClient creates and initializes a Bybit client, automatically connecting,
 // subscribing to topics, and starting message reading
 func NewBybitClient(cfg *config.Config) *BybitClient {
@@ -261,140 +266,160 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 
 // SendOrder sends a trading order (unchanged)
 func (c *BybitClient) SendOrder(order *types.Order) (string, error) {
-    timestamp := time.Now().UnixMilli()
-    recvWindow := 5000
-    signature := c.generateSignature(fmt.Sprintf("%d%d", timestamp, recvWindow))
-
-    orderMsg := map[string]interface{}{
-        "op": "order.create",
-        "args": []interface{}{
-            map[string]interface{}{
-                "symbol":      order.Instrument.BaseCurrency + order.Instrument.QuoteCurrency,
-                "side":        order.Side,
-                "orderType":   "Limit",
-                "qty":         ".01",
-                "price":       fmt.Sprintf("%d", order.Price.Load()),
-                "category":    "linear",
-                "timeInForce": "GTC",
-            },
-        },
-        "header": map[string]interface{}{
-            "X-BAPI-TIMESTAMP":   timestamp,
-            "X-BAPI-RECV-WINDOW": recvWindow,
-            "X-BAPI-SIGN":        signature,
-            "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
-        },
-    }
-
-    orderJSON, _ := json.Marshal(orderMsg)
-zerologlog.Debug().Str("order_message", string(orderJSON)).Msg("Sending order to Bybit")
-    if err := c.tradingWS.SendJSON(orderMsg); err != nil {
-zerologlog.Error().Err(err).Msg("Failed to send order")
-		return "", fmt.Errorf("failed to send order: %w", err)
-    }
-    zerologlog.Info().Msgf("Order sent for %s", order.Instrument.BaseCurrency+order.Instrument.QuoteCurrency)
-
-    // Generate a temporary order ID
+    // Generate temporary order ID immediately to return
     tempOrderID := fmt.Sprintf("bybit-%s", uuid.New().String())
+    
+    // Launch order processing in goroutine
+    go func() {
+        // Copy necessary values to avoid closure issues
+        symbol := order.Instrument.BaseCurrency + order.Instrument.QuoteCurrency
+        side := order.Side
+        price := order.Price.Load()
+        
+        timestamp := time.Now().UnixMilli()
+        recvWindow := 5000
+        signature := c.generateSignature(fmt.Sprintf("%d%d", timestamp, recvWindow))
+
+        orderMsg := map[string]interface{}{
+            "op": "order.create",
+            "args": []interface{}{
+                map[string]interface{}{
+                    "symbol":      symbol,
+                    "side":        side,
+                    "orderType":   "Limit",
+                    "qty":         ".01",
+                    "price":       fmt.Sprintf("%d", price),
+                    "category":    "linear",
+                    "timeInForce": "GTC",
+                },
+            },
+            "header": map[string]interface{}{
+                "X-BAPI-TIMESTAMP":   timestamp,
+                "X-BAPI-RECV-WINDOW": recvWindow,
+                "X-BAPI-SIGN":        signature,
+                "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
+            },
+        }
+
+        orderJSON, _ := json.Marshal(orderMsg)
+        zerologlog.Debug().Str("order_message", string(orderJSON)).Msg("Sending order to Bybit")
+        
+        if err := c.tradingWS.SendJSON(orderMsg); err != nil {
+            zerologlog.Error().Err(err).Msg("Failed to send order")
+        } else {
+            zerologlog.Info().Msgf("Order sent for %s", symbol)
+        }
+    }()
+
     return tempOrderID, nil
 }
 
+// CancelOrder cancels an order asynchronously (fire-and-forget)
 func (c *BybitClient) CancelOrder(orderID string) error {
-    timestamp := time.Now().UnixMilli()
-    recvWindow := 5000
-    toSign := fmt.Sprintf("%d%d", timestamp, recvWindow)
-    signature := c.generateSignature(toSign)
+    // Launch cancellation in goroutine
+    go func(id string) {
+        // Copy necessary values to avoid closure issues
+        symbol := c.symbol
+        
+        timestamp := time.Now().UnixMilli()
+        recvWindow := 5000
+        toSign := fmt.Sprintf("%d%d", timestamp, recvWindow)
+        signature := c.generateSignature(toSign)
 
-    cancelMsg := struct {
-        OP     string        `json:"op"`
-        Args   []interface{} `json:"args"`
-        Header map[string]interface{} `json:"header"`
-    }{
-        OP: "order.cancel",
-        Args: []interface{}{
-            map[string]interface{}{
-                "orderId":  orderID,
-                "category": "linear", // Adjust if needed (e.g., "spot" for spot trading)
-                "symbol":   c.symbol,
+        cancelMsg := struct {
+            OP     string        `json:"op"`
+            Args   []interface{} `json:"args"`
+            Header map[string]interface{} `json:"header"`
+        }{
+            OP: "order.cancel",
+            Args: []interface{}{
+                map[string]interface{}{
+                    "orderId":  id,
+                    "category": "linear",
+                    "symbol":   symbol,
+                },
             },
-        },
-        Header: map[string]interface{}{
-            "X-BAPI-TIMESTAMP":   timestamp,
-            "X-BAPI-RECV-WINDOW": recvWindow,
-            "X-BAPI-SIGN":        signature,
-            "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
-        },
-    }
+            Header: map[string]interface{}{
+                "X-BAPI-TIMESTAMP":   timestamp,
+                "X-BAPI-RECV-WINDOW": recvWindow,
+                "X-BAPI-SIGN":        signature,
+                "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
+            },
+        }
 
-    cancelJSON, err := json.Marshal(cancelMsg)
-    if err != nil {
-        zerologlog.Error().Err(err).Msg("Failed to marshal cancel order message")
-        return fmt.Errorf("failed to marshal cancel order: %w", err)
-    }
+        cancelJSON, err := json.Marshal(cancelMsg)
+        if err != nil {
+            zerologlog.Error().Err(err).Msg("Failed to marshal cancel order message")
+            return
+        }
 
-    zerologlog.Debug().Str("cancel_message", string(cancelJSON)).Msg("Sending cancel order to Bybit")
-    if err := c.tradingWS.SendJSON(cancelMsg); err != nil {
-        zerologlog.Error().Err(err).Msg("Failed to send cancel order")
-        return fmt.Errorf("failed to send cancel order: %w", err)
-    }
-    zerologlog.Info().Str("orderId", orderID).Str("symbol", c.symbol).Msg("Cancel order request sent")
+        zerologlog.Debug().Str("cancel_message", string(cancelJSON)).Msg("Sending cancel order to Bybit")
+        
+        if err := c.tradingWS.SendJSON(cancelMsg); err != nil {
+            zerologlog.Error().Err(err).Msg("Failed to send cancel order")
+        } else {
+            zerologlog.Info().Str("orderId", id).Str("symbol", symbol).Msg("Cancel order request sent")
+        }
+    }(orderID)  // Pass orderID as parameter
+
     return nil
 }
 
+// AmendOrder amends an order asynchronously (fire-and-forget)
 func (c *BybitClient) AmendOrder(symbol, orderId string, newPrice, newQty int64) error {
-    // Generate timestamp and signature
-    timestamp := time.Now().UnixMilli()
-    recvWindow := 5000
-    toSign := fmt.Sprintf("%d%d", timestamp, recvWindow)
-    signature := c.generateSignature(toSign)
+    // Launch amendment in goroutine
+    go func(sym, oid string, np, nq int64) {
+        timestamp := time.Now().UnixMilli()
+        recvWindow := 5000
+        toSign := fmt.Sprintf("%d%d", timestamp, recvWindow)
+        signature := c.generateSignature(toSign)
 
-    // Define argument structure
-    type AmendArg struct {
-        OrderID  string `json:"orderId"`
-        Category string `json:"category"`
-        Symbol   string `json:"symbol"`
-        Price    string `json:"price,omitempty"`
-        Qty      string `json:"qty,omitempty"`
-    }
+        type AmendArg struct {
+            OrderID  string `json:"orderId"`
+            Category string `json:"category"`
+            Symbol   string `json:"symbol"`
+            Price    string `json:"price,omitempty"`
+            Qty      string `json:"qty,omitempty"`
+        }
 
-    // Build amend message
-    amendMsg := struct {
-        OP     string        `json:"op"`
-        Args   []AmendArg    `json:"args"`
-        Header map[string]interface{} `json:"header"`
-    }{
-        OP: "order.amend",
-        Args: []AmendArg{
-            {
-                OrderID:  orderId,
-                Category: "linear",
-                Symbol:   symbol,
-                Price:    fmt.Sprintf("%d", newPrice),
-                Qty:      ".01",
+        amendMsg := struct {
+            OP     string        `json:"op"`
+            Args   []AmendArg    `json:"args"`
+            Header map[string]interface{} `json:"header"`
+        }{
+            OP: "order.amend",
+            Args: []AmendArg{
+                {
+                    OrderID:  oid,
+                    Category: "linear",
+                    Symbol:   sym,
+                    Price:    fmt.Sprintf("%d", np),
+                    Qty:      ".01",
+                },
             },
-        },
-        Header: map[string]interface{}{
-            "X-BAPI-TIMESTAMP":   timestamp,
-            "X-BAPI-RECV-WINDOW": recvWindow,
-            "X-BAPI-SIGN":        signature,
-            "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
-        },
-    }
+            Header: map[string]interface{}{
+                "X-BAPI-TIMESTAMP":   timestamp,
+                "X-BAPI-RECV-WINDOW": recvWindow,
+                "X-BAPI-SIGN":        signature,
+                "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
+            },
+        }
 
-    // Marshal to JSON
-    amendJSON, err := json.Marshal(amendMsg)
-    if err != nil {
-        zerologlog.Error().Err(err).Msg("Failed to marshal amend order message")
-        return fmt.Errorf("failed to marshal amend order: %w", err)
-    }
+        amendJSON, err := json.Marshal(amendMsg)
+        if err != nil {
+            zerologlog.Error().Err(err).Msg("Failed to marshal amend order message")
+            return
+        }
 
-    // Log and send the message
-    zerologlog.Debug().Str("amend_message", string(amendJSON)).Msg("Sending amend order to Bybit")
-    if err := c.tradingWS.SendJSON(amendMsg); err != nil {
-        zerologlog.Error().Err(err).Msg("Failed to send amend order")
-        return fmt.Errorf("failed to send amend order: %w", err)
-    }
-    zerologlog.Info().Str("orderId", orderId).Str("symbol", symbol).Int64("newPrice", newPrice).Int64("newQty", newQty).Msg("Amend order request sent")
+        zerologlog.Debug().Str("amend_message", string(amendJSON)).Msg("Sending amend order to Bybit")
+        
+        if err := c.tradingWS.SendJSON(amendMsg); err != nil {
+            zerologlog.Error().Err(err).Msg("Failed to send amend order")
+        } else {
+            zerologlog.Info().Str("orderId", oid).Str("symbol", sym).Int64("newPrice", np).Int64("newQty", nq).Msg("Amend order request sent")
+        }
+    }(symbol, orderId, newPrice, newQty)  // Pass parameters
+
     return nil
 }
 
