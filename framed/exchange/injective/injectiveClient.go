@@ -124,7 +124,7 @@ log.Printf("reached beof tradeclient")
 
 func (c *InjectiveClient) handleGasPriceUpdate(gasPrice int64) {
     c.latestGasPrice.Store(gasPrice)
-    zerolog.Info().Int64("gas_price", gasPrice).Msg("Updated gas price")
+     zerolog.Info().Int64("gas_price", gasPrice).Msg("Updated gas price")
 }
 
 // RegisterOrderUpdateCallback sets the callback for order updates
@@ -268,10 +268,13 @@ func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
         }
 
 	    gasPrice := c.latestGasPrice.Load()
-        if gasPrice == 0 {
-            gasPrice = c.tradeClient.CurrentChainGasPrice()
-        }
-        c.tradeClient.SetGasPrice(gasPrice)
+        // if gasPrice == 0 {
+        //     gasPrice = c.tradeClient.CurrentChainGasPrice()
+        // }
+      
+        badPrice := c.tradeClient.CurrentChainGasPrice()
+          c.tradeClient.SetGasPrice(badPrice)
+         zerolog.Info().Int64("bad", badPrice).Msg("bad send")
         zerolog.Info().Int64("gas", gasPrice).Msg("123send")
 
         senderAddress, err := sdk.AccAddressFromBech32(c.senderAddress)
