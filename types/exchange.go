@@ -9,8 +9,7 @@ const (
 	// For "Other", any string value can be used.
 )
 
-// String implements the fmt.Stringer interface for ExchangeType,
-// mimicking Rust's fmt::Display.
+
 func (et ExchangeType) String() string {
 	return string(et)
 }

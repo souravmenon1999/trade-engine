@@ -10,443 +10,405 @@ import (
 )
 
 type Order struct {
-	ClientOrderID uuid.UUID
-	Instrument    *Instrument
-	Side          Side
-	OrderType     OrderType
-	Exchange      *Exchange
-	TimeInForce   TimeInForce
+    clientOrderID   uuid.UUID
+    instrument      *Instrument // Pointer to assumed Instrument type
+    side            Side
+    orderType       OrderType
+    exchange        *Exchange // Pointer to assumed Exchange type (nil for None)
+    timeInForce     TimeInForce
 
-	exchangeIDMu sync.Mutex
-	exchangeID   *string
-
-	status         int64
-	quantity       int64
-	filledQuantity int64
-	price          int64
-	createdAt      int64
-	updatedAt      int64
+    // Thread-safe fields
+    exchangeIDMutex sync.RWMutex
+    exchangeID      *string
+    status          atomic.Int64
+    quantity        atomic.Int64
+    filledQuantity  atomic.Int64
+    price           atomic.Int64 // Stored as price * 1_000_000
+    createdAt       atomic.Int64 // Timestamp in milliseconds
+    updatedAt       atomic.Int64 // Timestamp in milliseconds
 }
 
-// OrderUpdate struct
-type OrderUpdate struct {
-	Order           *Order
-	Success         bool
-	UpdateType      OrderUpdateType
-	ErrorMessage    *string
-	RequestID       *string
-	ExchangeOrderID *string
-	FillQty         *float64
-	FillPrice       *float64
-	UpdatedAt       int64
-	IsMaker         bool
-	AmendType       *AmendType
-	OtherMessage    *string
-}
-
-// NewLimitOrder creates a new limit order
-func NewLimitOrder(
-	instrument *Instrument,
-	side Side,
-	quantity float64,
-	price float64,
-	timeInForce TimeInForce,
-) *Order {
-	now := time.Now().UnixMilli()
-	order := &Order{
-		ClientOrderID: uuid.New(),
-		Instrument:    instrument,
-		Side:          side,
-		OrderType:     OrderTypeLimit,
-		Exchange:      nil,
-		TimeInForce:   timeInForce,
-		exchangeID:    nil,
-	}
-	atomic.StoreInt64(&order.status, int64(OrderStatusSubmitted))
-	atomic.StoreInt64(&order.quantity, int64(math.Round(quantity*SCALE_FACTOR_F64)))
-	atomic.StoreInt64(&order.filledQuantity, 0)
-	atomic.StoreInt64(&order.price, int64(price*SCALE_FACTOR_F64))
-	atomic.StoreInt64(&order.createdAt, now)
-	atomic.StoreInt64(&order.updatedAt, now)
-	return order
-}
-
-// NewMarketOrder creates a new market order
-func NewMarketOrder(
-	instrument *Instrument,
-	side Side,
-	quantity float64,
-	price float64,
-) *Order {
-	now := time.Now().UnixMilli()
-	order := &Order{
-		ClientOrderID: uuid.New(),
-		Instrument:    instrument,
-		Side:          side,
-		OrderType:     OrderTypeMarket,
-		Exchange:      nil,
-		TimeInForce:   TimeInForceIOC,
-		exchangeID:    nil,
-	}
-	atomic.StoreInt64(&order.status, int64(OrderStatusSubmitted))
-	atomic.StoreInt64(&order.quantity, int64(math.Round(quantity*SCALE_FACTOR_F64)))
-	atomic.StoreInt64(&order.filledQuantity, 0)
-	atomic.StoreInt64(&order.price, int64(price*SCALE_FACTOR_F64))
-	atomic.StoreInt64(&order.createdAt, now)
-	atomic.StoreInt64(&order.updatedAt, now)
-	return order
-}
-
-// Clone creates a deep copy of the Order
+// Clone method (approximated since Go doesn’t have direct equivalent)
 func (o *Order) Clone() *Order {
-	cloned := &Order{
-		ClientOrderID: o.ClientOrderID,
-		Instrument:    o.Instrument,
-		Side:          o.Side,
-		OrderType:     o.OrderType,
-		Exchange:      o.Exchange,
-		TimeInForce:   o.TimeInForce,
-	}
-	o.exchangeIDMu.Lock()
-	if o.exchangeID != nil {
-		exchangeID := *o.exchangeID
-		cloned.exchangeID = &exchangeID
-	}
-	o.exchangeIDMu.Unlock()
-	cloned.status = atomic.LoadInt64(&o.status)
-	cloned.quantity = atomic.LoadInt64(&o.quantity)
-	cloned.filledQuantity = atomic.LoadInt64(&o.filledQuantity)
-	cloned.price = atomic.LoadInt64(&o.price)
-	cloned.createdAt = atomic.LoadInt64(&o.createdAt)
-	cloned.updatedAt = atomic.LoadInt64(&o.updatedAt)
-	return cloned
+    order := &Order{
+        clientOrderID: o.clientOrderID,
+        instrument:    o.instrument,
+        side:          o.side,
+        orderType:     o.orderType,
+        exchange:      o.exchange,
+        timeInForce:   o.timeInForce,
+    }
+    o.exchangeIDMutex.RLock()
+    if o.exchangeID != nil {
+        id := *o.exchangeID
+        order.exchangeID = &id
+    }
+    o.exchangeIDMutex.RUnlock()
+    order.status.Store(o.status.Load())
+    order.quantity.Store(o.quantity.Load())
+    order.filledQuantity.Store(o.filledQuantity.Load())
+    order.price.Store(o.price.Load())
+    order.createdAt.Store(o.createdAt.Load())
+    order.updatedAt.Store(o.updatedAt.Load())
+    return order
 }
 
-// GetQuantity returns the order quantity as a float64
+// NewLimit creates a new limit order
+func NewLimit(instrument *Instrument, side Side, quantity float64, price float64, timeInForce TimeInForce) *Order {
+    now := time.Now().UnixMilli()
+    order := &Order{
+        clientOrderID: uuid.New(),
+        instrument:    instrument,
+        side:          side,
+        orderType:     OrderTypeLimit,
+        exchange:      nil,
+        timeInForce:   timeInForce,
+        exchangeID:    nil,
+    }
+    order.status.Store(int64(OrderStatusSubmitted))
+    order.quantity.Store(int64(math.Round(quantity * SCALE_FACTOR_F64)))
+    order.filledQuantity.Store(0)
+    order.price.Store(int64(math.Round(price * SCALE_FACTOR_F64)))
+    order.createdAt.Store(now)
+    order.updatedAt.Store(now)
+    return order
+}
+
+// GetQuantity returns quantity as float64
 func (o *Order) GetQuantity() float64 {
-	return float64(atomic.LoadInt64(&o.quantity)) / SCALE_FACTOR_F64
+    return float64(o.quantity.Load()) / SCALE_FACTOR_F64
 }
 
-// GetQuantityU64 returns the raw scaled quantity
+// GetQuantityU64 returns quantity as uint64
 func (o *Order) GetQuantityU64() uint64 {
-	return uint64(atomic.LoadInt64(&o.quantity))
+    return uint64(o.quantity.Load())
 }
 
-// GetUnfilledQuantity returns the unfilled quantity as a float64
+// GetUnfilledQuantity returns unfilled quantity as float64
 func (o *Order) GetUnfilledQuantity() float64 {
-	return o.GetQuantity() - o.GetFilledQuantity()
+    return o.GetQuantity() - o.GetFilledQuantity()
 }
 
-// GetFilledQuantityI64 returns the raw filled quantity
+// GetFilledQuantityI64 returns filled quantity as int64
 func (o *Order) GetFilledQuantityI64() int64 {
-	return atomic.LoadInt64(&o.filledQuantity)
+    return o.filledQuantity.Load()
 }
 
-// GetUnfilledQuantityI64 returns the raw unfilled quantity
+// GetUnfilledQuantityI64 returns unfilled quantity as int64
 func (o *Order) GetUnfilledQuantityI64() int64 {
-	return int64(o.GetQuantityU64()) - o.GetFilledQuantityI64()
+    return int64(o.GetQuantityU64()) - o.GetFilledQuantityI64()
 }
 
-// GetStatus returns the current status of the order
+// GetStatus returns the current order status
 func (o *Order) GetStatus() OrderStatus {
-	switch atomic.LoadInt64(&o.status) {
-	case 0:
-		return OrderStatusSubmitted
-	case 1:
-		return OrderStatusOpen
-	case 2:
-		return OrderStatusPartiallyFilled
-	case 3:
-		return OrderStatusFilled
-	case 4:
-		return OrderStatusCancelled
-	case 5:
-		return OrderStatusRejected
-	default:
-		return OrderStatusUnknown
-	}
+    switch o.status.Load() {
+    case 0:
+        return OrderStatusSubmitted
+    case 1:
+        return OrderStatusOpen
+    case 2:
+        return OrderStatusPartiallyFilled
+    case 3:
+        return OrderStatusFilled
+    case 4:
+        return OrderStatusCancelled
+    case 5:
+        return OrderStatusRejected
+    default:
+        return OrderStatusUnknown
+    }
 }
 
-// GetPrice returns the order price as a float64 or nil if unset
+// GetPrice returns price as *float64 (nil if unset)
 func (o *Order) GetPrice() *float64 {
-	price := atomic.LoadInt64(&o.price)
-	if price == UNSET_VALUE {
-		return nil
-	}
-	p := float64(price) / SCALE_FACTOR_F64
-	return &p
+    price := o.price.Load()
+    if price == UNSET_VALUE {
+        return nil
+    }
+    p := float64(price) / SCALE_FACTOR_F64
+    return &p
 }
 
-// GetPriceU64 returns the raw scaled price or nil if unset
+// GetPriceU64 returns price as *uint64 (nil if unset)
 func (o *Order) GetPriceU64() *uint64 {
-	price := atomic.LoadInt64(&o.price)
-	if price == UNSET_VALUE {
-		return nil
-	}
-	p := uint64(price)
-	return &p
+    price := o.price.Load()
+    if price == UNSET_VALUE {
+        return nil
+    }
+    p := uint64(price)
+    return &p
 }
 
-// GetFilledQuantity returns the filled quantity as a float64
+// GetFilledQuantity returns filled quantity as float64
 func (o *Order) GetFilledQuantity() float64 {
-	return float64(atomic.LoadInt64(&o.filledQuantity)) / SCALE_FACTOR_F64
+    return float64(o.filledQuantity.Load()) / SCALE_FACTOR_F64
 }
 
-// ExchangeID returns the exchange ID
-func (o *Order) ExchangeID() *string {
-	o.exchangeIDMu.Lock()
-	defer o.exchangeIDMu.Unlock()
-	if o.exchangeID == nil {
-		return nil
-	}
-	exchangeID := *o.exchangeID
-	return &exchangeID
-}
-
-// GetCreatedAt returns the creation timestamp
-func (o *Order) GetCreatedAt() int64 {
-	return atomic.LoadInt64(&o.createdAt)
-}
-
-// GetUpdatedAt returns the last updated timestamp
-func (o *Order) GetUpdatedAt() int64 {
-	return atomic.LoadInt64(&o.updatedAt)
+// NewMarket creates a new market order
+func NewMarket(instrument *Instrument, side Side, quantity float64, price float64) *Order {
+    now := time.Now().UnixMilli()
+    order := &Order{
+        clientOrderID: uuid.New(),
+        instrument:    instrument,
+        side:          side,
+        orderType:     OrderTypeMarket,
+        exchange:      nil,
+        timeInForce:   TimeInForceIOC,
+        exchangeID:    nil,
+    }
+    order.status.Store(int64(OrderStatusSubmitted))
+    order.price.Store(int64(math.Round(price * SCALE_FACTOR_F64)))
+    order.quantity.Store(int64(math.Round(quantity * SCALE_FACTOR_F64)))
+    order.filledQuantity.Store(0)
+    order.createdAt.Store(now)
+    order.updatedAt.Store(now)
+    return order
 }
 
 // UpdateStatus updates the order status
 func (o *Order) UpdateStatus(status OrderStatus) {
-	atomic.StoreInt64(&o.status, int64(status))
+    o.status.Store(int64(status))
 }
 
 // UpdateFilledQuantity updates the filled quantity
 func (o *Order) UpdateFilledQuantity(fillQty float64) {
-	fill := int64(fillQty * SCALE_FACTOR_F64)
-	atomic.AddInt64(&o.filledQuantity, fill)
+    fill := int64(math.Round(fillQty * SCALE_FACTOR_F64))
+    o.filledQuantity.Add(fill)
 }
 
-// UpdateQuantity updates the order quantity
+// UpdateQuantity updates the quantity
 func (o *Order) UpdateQuantity(qty float64) {
-	atomic.StoreInt64(&o.quantity, int64(math.Round(qty*SCALE_FACTOR_F64)))
+    o.quantity.Store(int64(math.Round(qty * SCALE_FACTOR_F64)))
 }
 
-// UpdatePrice updates the order price
+// UpdatePrice updates the price
 func (o *Order) UpdatePrice(price float64) {
-	atomic.StoreInt64(&o.price, int64(price*SCALE_FACTOR_F64))
+    o.price.Store(int64(math.Round(price * SCALE_FACTOR_F64)))
 }
 
-// UpdateTimestamp updates the updatedAt timestamp
+// ExchangeID returns the exchange ID
+func (o *Order) ExchangeID() *string {
+    o.exchangeIDMutex.RLock()
+    defer o.exchangeIDMutex.RUnlock()
+    if o.exchangeID == nil {
+        return nil
+    }
+    id := *o.exchangeID
+    return &id
+}
+
+// UpdateTimestamp updates the updated_at timestamp
 func (o *Order) UpdateTimestamp() {
-	now := time.Now().UnixMilli()
-	atomic.StoreInt64(&o.updatedAt, now)
+    now := time.Now().UnixMilli()
+    o.updatedAt.Store(now)
+}
+
+// GetCreatedAt returns the created_at timestamp
+func (o *Order) GetCreatedAt() int64 {
+    return o.createdAt.Load()
+}
+
+// GetUpdatedAt returns the updated_at timestamp
+func (o *Order) GetUpdatedAt() int64 {
+    return o.updatedAt.Load()
 }
 
 // CanCancel checks if the order can be canceled
 func (o *Order) CanCancel() bool {
-	status := o.GetStatus()
-	return status != OrderStatusCancelled && status != OrderStatusFilled
-}
-
-// NewOrderUpdateCreated creates an update for a created order
-func NewOrderUpdateCreated(
-	order *Order,
-	success bool,
-	exchangeOrderID *string,
-	updatedAt int64,
-) *OrderUpdate {
-	requestID := order.ClientOrderID.String()
-	return &OrderUpdate{
-		Order:           order,
-		Success:         success,
-		UpdateType:      OrderUpdateTypeCreated,
-		ErrorMessage:    nil,
-		RequestID:       &requestID,
-		ExchangeOrderID: exchangeOrderID,
-		UpdatedAt:       updatedAt,
-		FillQty:         nil,
-		FillPrice:       nil,
-		IsMaker:         false,
-		AmendType:       nil,
-		OtherMessage:    nil,
-	}
-}
-
-// NewOrderUpdateAmended creates an update for an amended order
-func NewOrderUpdateAmended(
-	order *Order,
-	success bool,
-	updatedAt int64,
-	amendType *AmendType,
-) *OrderUpdate {
-	requestID := order.ClientOrderID.String()
-	exchangeID := order.ExchangeID()
-	return &OrderUpdate{
-		Order:           order,
-		Success:         success,
-		UpdateType:      OrderUpdateTypeAmended,
-		ErrorMessage:    nil,
-		RequestID:       &requestID,
-		ExchangeOrderID: exchangeID,
-		UpdatedAt:       updatedAt,
-		FillQty:         nil,
-		FillPrice:       nil,
-		IsMaker:         false,
-		AmendType:       amendType,
-		OtherMessage:    nil,
-	}
-}
-
-// NewOrderUpdateCanceled creates an update for a canceled order
-func NewOrderUpdateCanceled(
-	order *Order,
-	success bool,
-	updatedAt int64,
-) *OrderUpdate {
-	requestID := order.ClientOrderID.String()
-	exchangeID := order.ExchangeID()
-	return &OrderUpdate{
-		Order:           order,
-		Success:         success,
-		UpdateType:      OrderUpdateTypeCanceled,
-		ErrorMessage:    nil,
-		RequestID:       &requestID,
-		ExchangeOrderID: exchangeID,
-		UpdatedAt:       updatedAt,
-		FillQty:         nil,
-		FillPrice:       nil,
-		IsMaker:         false,
-		AmendType:       nil,
-		OtherMessage:    nil,
-	}
-}
-
-// NewOrderUpdateFilled creates an update for a filled order
-func NewOrderUpdateFilled(
-	order *Order,
-	fillQty float64,
-	fillPrice float64,
-	updatedAt int64,
-	isMaker bool,
-) *OrderUpdate {
-	requestID := order.ClientOrderID.String()
-	exchangeID := order.ExchangeID()
-	return &OrderUpdate{
-		Order:           order,
-		Success:         true,
-		UpdateType:      OrderUpdateTypeFill,
-		ErrorMessage:    nil,
-		RequestID:       &requestID,
-		ExchangeOrderID: exchangeID,
-		FillQty:         &fillQty,
-		FillPrice:       &fillPrice,
-		UpdatedAt:       updatedAt,
-		IsMaker:         isMaker,
-		AmendType:       nil,
-		OtherMessage:    nil,
-	}
-}
-
-// NewOrderUpdateRejected creates an update for a rejected order
-func NewOrderUpdateRejected(
-	order *Order,
-	errorMessage *string,
-	updatedAt int64,
-) *OrderUpdate {
-	requestID := order.ClientOrderID.String()
-	exchangeID := order.ExchangeID()
-	return &OrderUpdate{
-		Order:           order,
-		Success:         false,
-		UpdateType:      OrderUpdateTypeRejected,
-		ErrorMessage:    errorMessage,
-		RequestID:       &requestID,
-		ExchangeOrderID: exchangeID,
-		UpdatedAt:       updatedAt,
-		FillQty:         nil,
-		FillPrice:       nil,
-		IsMaker:         false,
-		AmendType:       nil,
-		OtherMessage:    nil,
-	}
-}
-
-// WithErrorMessage adds an error message to the update
-func (u *OrderUpdate) WithErrorMessage(message string) *OrderUpdate {
-	u Favoredcall(arguments...) {
-	u.ErrorMessage = &message
-	return u
-}
-
-// WithRequestID adds a request ID to the update
-func (u *OrderUpdate) WithRequestID(requestID string) *OrderUpdate {
-	u.RequestID = &requestID
-	return u
+    status := o.GetStatus()
+    return status != OrderStatusCancelled && status != OrderStatusFilled
 }
 
 // ApplyUpdate applies an update to the order
 func (o *Order) ApplyUpdate(update *OrderUpdate) {
-	newTimestamp := update.UpdatedAt
-	isFill := update.UpdateType == OrderUpdateTypeFill
-	noExchangeID := o.ExchangeID() == nil
-	currentUpdatedAt := atomic.LoadInt64(&o.updatedAt)
-	shouldApply := newTimestamp > currentUpdatedAt || isFill || noExchangeID
+    newTimestamp := update.updatedAt
+    isFill := update.updateType == "Fill"
+    noExchangeID := func() bool {
+        o.exchangeIDMutex.RLock()
+        defer o.exchangeIDMutex.RUnlock()
+        return o.exchangeID == nil
+    }()
+    shouldApply := newTimestamp > o.updatedAt.Load() || isFill || noExchangeID
+    if !shouldApply || !update.success {
+        return
+    }
+    o.updatedAt.Store(newTimestamp)
 
-	if !shouldApply || !update.Success {
-		return
-	}
-	atomic.StoreInt64(&o.updatedAt, newTimestamp)
+    switch update.updateType {
+    case "Created":
+        if update.exchangeOrderID != nil {
+            o.exchangeIDMutex.Lock()
+            o.exchangeID = new(string)
+            *o.exchangeID = *update.exchangeOrderID
+            o.exchangeIDMutex.Unlock()
+            if o.status.Load() == int64(OrderStatusSubmitted) {
+                o.status.Store(int64(OrderStatusOpen))
+            }
+        }
+    case "Amended":
+        switch update.amendType {
+        case AmendTypePriceQty:
+            if update.newPrice != nil && update.newQty != nil {
+                o.price.Store(int64(math.Round(*update.newPrice * SCALE_FACTOR_F64)))
+                o.quantity.Store(int64(math.Round(*update.newQty * SCALE_FACTOR_F64)))
+            }
+        case AmendTypePrice:
+            if update.newPrice != nil {
+                o.price.Store(int64(math.Round(*update.newPrice * SCALE_FACTOR_F64)))
+            }
+        case AmendTypeQty:
+            if update.newQty != nil {
+                o.quantity.Store(int64(math.Round(*update.newQty * SCALE_FACTOR_F64)))
+            }
+        }
+    case "Canceled":
+        currentStatus := o.status.Load()
+        if currentStatus == int64(OrderStatusFilled) || currentStatus == int64(OrderStatusRejected) {
+            return
+        }
+        o.status.Store(int64(OrderStatusCancelled))
+    case "Fill":
+        if update.fillQty != nil {
+            fill := int64(math.Round(*update.fillQty * SCALE_FACTOR_F64))
+            o.filledQuantity.Add(fill)
+            newFilled := o.filledQuantity.Load()
+            currentQty := o.quantity.Load()
+            if newFilled >= currentQty {
+                o.status.Store(int64(OrderStatusFilled))
+                if newFilled > currentQty {
+                    o.filledQuantity.Store(currentQty)
+                }
+            } else {
+                o.status.Store(int64(OrderStatusPartiallyFilled))
+            }
+        }
+    case "Rejected":
+        o.status.Store(int64(OrderStatusRejected))
+    }
+}
 
-	switch update.UpdateType {
-	case OrderUpdateTypeCreated:
-		if update.ExchangeOrderID != nil {
-			o.exchangeIDMu.Lock()
-			o.exchangeID = update.ExchangeOrderID
-			o.exchangeIDMu.Unlock()
-			if atomic.LoadInt64(&o.status) == int64(OrderStatusSubmitted) {
-				atomic.StoreInt64(&o.status, int64(OrderStatusOpen))
-			}
-		}
-	case OrderUpdateTypeAmended:
-		if update.AmendType != nil {
-			switch update.AmendType.Type {
-			case "PriceQty":
-				if update.AmendType.NewPrice != nil && update.AmendType.NewQty != nil {
-					atomic.StoreInt64(&o.price, int64(*update.AmendType.NewPrice*SCALE_FACTOR_F64))
-					atomic.StoreInt64(&o.quantity, int64(*update.AmendType.NewQty*SCALE_FACTOR_F64))
-				}
-			case "Price":
-				if update.AmendType.NewPrice != nil {
-					atomic.StoreInt64(&o.price, int64(*update.AmendType.NewPrice*SCALE_FACTOR_F64))
-				}
-			case "Qty":
-				if update.AmendType.NewQty != nil {
-					atomic.StoreInt64(&o.quantity, int64(*update.AmendType.NewQty*SCALE_FACTOR_F64))
-				}
-			}
-		}
-	case OrderUpdateTypeCanceled:
-		currentStatus := atomic.LoadInt64(&o.status)
-		if currentStatus == int64(OrderStatusFilled) || currentStatus == int64(OrderStatusRejected) {
-			return
-		}
-		atomic.StoreInt64(&o.status, int64(OrderStatusCancelled))
-	case OrderUpdateTypeFill:
-		if update.FillQty != nil {
-			fill := int64(*update.FillQty * SCALE_FACTOR_F64)
-			atomic.AddInt64(&o.filledQuantity, fill)
-			newFilled := atomic.LoadInt64(&o.filledQuantity)
-			currentQty := atomic.LoadInt64(&o.quantity)
-			if newFilled >= currentQty {
-				atomic.StoreInt64(&o.status, int64(OrderStatusFilled))
-				if newFilled > currentQty {
-					atomic.StoreInt64(&o.filledQuantity, currentQty)
-				}
-			} else {
-				atomic.StoreInt64(&o.status, int64(OrderStatusPartiallyFilled))
-			}
-		}
-	case OrderUpdateTypeRejected:
-		atomic.StoreInt64(&o.status, int64(OrderStatusRejected))
-	default:
-		// Do nothing for OrderUpdateTypeOther or unrecognized types
-	}
+// OrderUpdateType constants
+const (
+    OrderUpdateTypeCreated  = "Created"
+    OrderUpdateTypeAmended  = "Amended"
+    OrderUpdateTypeCanceled = "Canceled"
+    OrderUpdateTypeFill     = "Fill"
+    OrderUpdateTypeRejected = "Rejected"
+    OrderUpdateTypeOther    = "Other"
+)
+
+// AmendType constants (assumed from Rust)
+const (
+    AmendTypePriceQty = iota
+    AmendTypePrice
+    AmendTypeQty
+)
+
+// OrderUpdate struct
+type OrderUpdate struct {
+    order           *Order
+    success         bool
+    updateType      string
+    errorMessage    *string
+    requestID       *string
+    exchangeOrderID *string
+    fillQty         *float64
+    fillPrice       *float64
+    updatedAt       int64
+    isMaker         bool
+    amendType       int     // For Amended type
+    newPrice        *float64 // For Amended type
+    newQty          *float64 // For Amended type
+}
+
+// OrderUpdate methods
+func NewCreated(order *Order, success bool, exchangeOrderID *string, updatedAt int64) *OrderUpdate {
+    requestID := order.clientOrderID.String()
+    return &OrderUpdate{
+        order:           order,
+        success:         success,
+        updateType:      OrderUpdateTypeCreated,
+        errorMessage:    nil,
+        requestID:       &requestID,
+        exchangeOrderID: exchangeOrderID,
+        updatedAt:       updatedAt,
+    }
+}
+
+func NewAmended(order *Order, success bool, updatedAt int64, amendType int, newPrice, newQty *float64) *OrderUpdate {
+    requestID := order.clientOrderID.String()
+    return &OrderUpdate{
+        order:           order,
+        success:         success,
+        updateType:      OrderUpdateTypeAmended,
+        errorMessage:    nil,
+        requestID:       &requestID,
+        exchangeOrderID: order.ExchangeID(),
+        updatedAt:       updatedAt,
+        amendType:       amendType,
+        newPrice:        newPrice,
+        newQty:          newQty,
+    }
+}
+
+func NewCanceled(order *Order, success bool, updatedAt int64) *OrderUpdate {
+    requestID := order.clientOrderID.String()
+    return &OrderUpdate{
+        order:           order,
+        success:         success,
+        updateType:      OrderUpdateTypeCanceled,
+        errorMessage:    nil,
+        requestID:       &requestID,
+        exchangeOrderID: order.ExchangeID(),
+        updatedAt:       updatedAt,
+    }
+}
+
+func NewFilled(order *Order, fillQty, fillPrice float64, updatedAt int64, isMaker bool) *OrderUpdate {
+    requestID := order.clientOrderID.String()
+    fQty := fillQty
+    fPrice := fillPrice
+    return &OrderUpdate{
+        order:           order,
+        success:         true,
+        updateType:      OrderUpdateTypeFill,
+        errorMessage:    nil,
+        requestID:       &requestID,
+        exchangeOrderID: order.ExchangeID(),
+        fillQty:         &fQty,
+        fillPrice:       &fPrice,
+        updatedAt:       updatedAt,
+        isMaker:         isMaker,
+    }
+}
+
+func NewRejected(order *Order, errorMessage *string, updatedAt int64) *OrderUpdate {
+    requestID := order.clientOrderID.String()
+    return &OrderUpdate{
+        order:           order,
+        success:         false,
+        updateType:      OrderUpdateTypeRejected,
+        errorMessage:    errorMessage,
+        requestID:       &requestID,
+        exchangeOrderID: order.ExchangeID(),
+        updatedAt:       updatedAt,
+    }
+}
+
+func (u *OrderUpdate) WithErrorMessage(message string) *OrderUpdate {
+    u.errorMessage = &message
+    return u
+}
+
+func (u *OrderUpdate) WithRequestID(requestID string) *OrderUpdate {
+    u.requestID = &requestID
+    return u
+}
+
+func (u *OrderUpdate) GetFillQuantity() *float64 {
+    return u.fillQty
+}
+
+func (u *OrderUpdate) GetFillPrice() *float64 {
+    return u.fillPrice
 }
