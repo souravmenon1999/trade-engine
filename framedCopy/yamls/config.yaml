@@ -1,0 +1,21 @@
+bybitOrderbook:
+  ws_url: "wss://stream.bybit.com/v5/public/linear"
+  symbol: "ETHUSDT"
+  base_currency: "ETH"
+  quote_currency: "USDT"
+  orderbook_depth: 50
+bybitExchangeClient:
+  trading_ws_url: "wss://stream.bybit.com/v5/trade"    # WebSocket for trading (orders)
+  updates_ws_url: "wss://stream.bybit.com/v5/private"
+  api_key: "5audz0lEsFqIDQgQbN"
+  api_secret: "zXKppDu7dxUT0LcVfGR0CmHwbIoNDabAFbuH"
+
+order:
+  quantity: 1
+
+injectiveExchange:
+  network_name: "mainnet"
+  lb: "lb"
+  priv_key: "e727b7f540777fe9c146ee3177677fc2dac1c46131ba5bf8a977f19c662d6c8b"
+  market_id: "0x54d4505adef6a5cef26bc403a33d595620ded4e15b9e2bc3dd489b714813366a"
+  subaccount_id: "0x18ac3db194e0f45fb4652766647e44c3388484ec000000000000000000000000"

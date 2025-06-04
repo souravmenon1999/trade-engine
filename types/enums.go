@@ -1,81 +1,38 @@
 package types
 
-import (
-	
-	"strconv" 
-
-)
-type Side int
-
-const (
-	Buy Side = iota 
-	Sell         
-)
-
-
-func (s *Side) String() string {
-	if s == nil {
-		return "nil Side" 
-	}
-	switch *s { 
-	case Buy:
-		return "Buy"
-	case Sell:
-		return "Sell"
-	default:
-		return "UnknownSide" 
-	}
-}
-
-// Opposite returns the opposite trading side.
-
-func (s *Side) Opposite() Side {
-	if s == nil {
-		
-		return Buy 
-	}
-	if *s == Buy { 
-		return Sell
-	}
-	return Buy
-}
+import "strconv"
 
 // OrderStatus represents the status of an order.
 type OrderStatus int
 
 const (
-	Submitted     OrderStatus = 0
-	Open          OrderStatus = 1
-	PartiallyFilled OrderStatus = 2
-	Filled        OrderStatus = 3
-	Cancelled     OrderStatus = 4
-	Rejected      OrderStatus = 5
-	Unknown       OrderStatus = -1 
+	OrderStatusSubmitted     OrderStatus = 0
+	OrderStatusOpen          OrderStatus = 1
+	OrderStatusPartiallyFilled OrderStatus = 2
+	OrderStatusFilled        OrderStatus = 3
+	OrderStatusCancelled     OrderStatus = 4
+	OrderStatusRejected      OrderStatus = 5
+	OrderStatusUnknown       OrderStatus = -1
 )
 
-
-
-func (os *OrderStatus) String() string {
-	if os == nil {
-		return "nil OrderStatus"
-	}
-	switch *os { 
-	case Submitted:
+func (os OrderStatus) String() string {
+	switch os {
+	case OrderStatusSubmitted:
 		return "Submitted"
-	case Open:
+	case OrderStatusOpen:
 		return "Open"
-	case PartiallyFilled:
+	case OrderStatusPartiallyFilled:
 		return "PartiallyFilled"
-	case Filled:
+	case OrderStatusFilled:
 		return "Filled"
-	case Cancelled:
+	case OrderStatusCancelled:
 		return "Cancelled"
-	case Rejected:
+	case OrderStatusRejected:
 		return "Rejected"
-	case Unknown:
+	case OrderStatusUnknown:
 		return "Unknown"
 	default:
-		return "OrderStatus(" + strconv.Itoa(int(*os)) + ")" 
+		return "OrderStatus(" + strconv.Itoa(int(os)) + ")"
 	}
 }
 
@@ -83,89 +40,132 @@ func (os *OrderStatus) String() string {
 type OrderType int
 
 const (
-	Market OrderType = iota 
-	Limit                 
-	StopMarket           
-	StopLimit            
+	OrderTypeMarket    OrderType = 0
+	OrderTypeLimit     OrderType = 1
+	OrderTypeStopMarket OrderType = 2
+	OrderTypeStopLimit  OrderType = 3
 )
 
-// String implements the fmt.Stringer interface for OrderType.
-
-func (ot *OrderType) String() string {
-	if ot == nil {
-		return "nil OrderType"
-	}
-	switch *ot {
-	case Market:
+func (ot OrderType) String() string {
+	switch ot {
+	case OrderTypeMarket:
 		return "Market"
-	case Limit:
+	case OrderTypeLimit:
 		return "Limit"
-	case StopMarket:
+	case OrderTypeStopMarket:
 		return "StopMarket"
-	case StopLimit:
+	case OrderTypeStopLimit:
 		return "StopLimit"
 	default:
 		return "UnknownOrderType"
 	}
 }
 
-// ContractType represents the types of contracts/instruments that can be traded.
-type ContractType int
+// Side represents the trading side (buy or sell).
+type Side int
 
 const (
-	Spot      ContractType = iota 
-	Futures                      
-	Perpetual                    
-	Option                       
+	SideBuy  Side = 0
+	SideSell Side = 1
 )
 
-// String implements the fmt.Stringer interface for ContractType.
-func (ct *ContractType) String() string {
-	if ct == nil {
-		return "nil ContractType"
-	}
-	switch *ct { 
-	case Spot:
-		return "Spot"
-	case Futures:
-		return "Futures"
-	case Perpetual:
-		return "Perpetual"
-	case Option:
-		return "Option"
+func (s Side) String() string {
+	switch s {
+	case SideBuy:
+		return "Buy"
+	case SideSell:
+		return "Sell"
 	default:
-		return "UnknownContractType"
+		return "UnknownSide"
 	}
+}
+
+func (s Side) Opposite() Side {
+	if s == SideBuy {
+		return SideSell
+	}
+	return SideBuy
 }
 
 // TimeInForce represents the time in force for orders.
 type TimeInForce int
 
 const (
-	GTC TimeInForce = iota // 0: Good Till Cancelled
-	IOC                     // 1: Immediate or Cancel
-	FOK                     // 2: Fill or Kill
-	GTD                     // 3: Good Till Date
-	POST_ONLY               // 4: Post Only
+	TimeInForceGTC      TimeInForce = 0
+	TimeInForceIOC      TimeInForce = 1
+	TimeInForceFOK      TimeInForce = 2
+	TimeInForceGTD      TimeInForce = 3
+	TimeInForcePostOnly TimeInForce = 4
 )
 
-// String implements the fmt.Stringer interface for TimeInForce.
-func (tif *TimeInForce) String() string {
-	if tif == nil {
-		return "nil TimeInForce"
-	}
-	switch *tif { // Dereference the pointer
-	case GTC:
+func (tif TimeInForce) String() string {
+	switch tif {
+	case TimeInForceGTC:
 		return "GTC"
-	case IOC:
+	case TimeInForceIOC:
 		return "IOC"
-	case FOK:
+	case TimeInForceFOK:
 		return "FOK"
-	case GTD:
+	case TimeInForceGTD:
 		return "GTD"
-	case POST_ONLY:
+	case TimeInForcePostOnly:
 		return "POST_ONLY"
 	default:
 		return "UnknownTimeInForce"
 	}
 }
+
+// OrderUpdateType represents the type of order update.
+type OrderUpdateType string
+
+const (
+	OrderUpdateTypeCreated  OrderUpdateType = "Created"
+	OrderUpdateTypeAmended  OrderUpdateType = "Amended"
+	OrderUpdateTypeCanceled OrderUpdateType = "Canceled"
+	OrderUpdateTypeFill     OrderUpdateType = "Fill"
+	OrderUpdateTypeRejected OrderUpdateType = "Rejected"
+	OrderUpdateTypeOther    OrderUpdateType = "Other"
+)
+
+func (out OrderUpdateType) String() string {
+	switch out {
+	case OrderUpdateTypeCreated:
+		return "Created"
+	case OrderUpdateTypeAmended:
+		return "Amended"
+	case OrderUpdateTypeCanceled:
+		return "Canceled"
+	case OrderUpdateTypeFill:
+		return "Fill"
+	case OrderUpdateTypeRejected:
+		return "Rejected"
+	case OrderUpdateTypeOther:
+		return "Other"
+	default:
+		return "UnknownOrderUpdateType"
+	}
+}
+
+// AmendType represents the type of amendment for an amended order update.
+type AmendType int
+
+const (
+	AmendTypePriceQty AmendType = 0
+	AmendTypePrice    AmendType = 1
+	AmendTypeQty      AmendType = 2
+)
+
+func (at AmendType) String() string {
+	switch at {
+	case AmendTypePriceQty:
+		return "PriceQty"
+	case AmendTypePrice:
+		return "Price"
+	case AmendTypeQty:
+		return "Qty"
+	default:
+		return "UnknownAmendType"
+	}
+}
+
+// Constants
