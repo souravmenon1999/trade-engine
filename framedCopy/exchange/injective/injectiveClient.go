@@ -19,8 +19,8 @@ import (
 	"github.com/google/uuid"
 	zerolog "github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
-	"github.com/souravmenon1999/trade-engine/framed/exchange/net/websockets/injective"
-	"github.com/souravmenon1999/trade-engine/framed/types"
+	"github.com/souravmenon1999/trade-engine/framedCopy/exchange/net/websockets/injective"
+	"github.com/souravmenon1999/trade-engine/framedCopy/types"
 )
 
 // InjectiveClient manages connections and subscriptions for Injective Protocol

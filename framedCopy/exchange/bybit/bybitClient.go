@@ -10,9 +10,9 @@ import (
 	"time"
 "github.com/google/uuid"
 	zerologlog "github.com/rs/zerolog/log"
-	"github.com/souravmenon1999/trade-engine/framed/config"
-	bybitWS "github.com/souravmenon1999/trade-engine/framed/exchange/net/websockets/bybit"
-	"github.com/souravmenon1999/trade-engine/framed/types"
+	"github.com/souravmenon1999/trade-engine/framedCopy/config"
+	bybitWS "github.com/souravmenon1999/trade-engine/framedCopy/exchange/net/websockets/bybit"
+	"github.com/souravmenon1999/trade-engine/framedCopy/types"
 )
 
 // BybitClient manages WebSocket connections for Bybit exchange

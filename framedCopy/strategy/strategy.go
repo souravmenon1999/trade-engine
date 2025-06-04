@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
-	"github.com/souravmenon1999/trade-engine/framed/config"
-	"github.com/souravmenon1999/trade-engine/framed/exchange"
+	"github.com/souravmenon1999/trade-engine/framedCopy/config"
+	"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
 	"github.com/souravmenon1999/trade-engine/framedCopy/types"
 )
 
