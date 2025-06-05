@@ -12,7 +12,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/rs/zerolog v1.34.0
 	github.com/shopspring/decimal v1.2.0
-	github.com/souravmenon1999/trade-engine/framedCopy v0.0.0-20250604221056-a977dca08461
+	github.com/souravmenon1999/trade-engine/framed v0.0.0-20250604221752-79a4b25c317d
 	github.com/spf13/viper v1.19.0
 )
 

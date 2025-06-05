@@ -8,10 +8,10 @@ import (
 
     "github.com/rs/zerolog"
     "github.com/rs/zerolog/log"
-    "github.com/souravmenon1999/trade-engine/framed/exchange/bybit"
-    "github.com/souravmenon1999/trade-engine/framed/exchange/injective"
-    "github.com/souravmenon1999/trade-engine/framed/config"      // Adjust to your config package path
-    "github.com/souravmenon1999/trade-engine/framed/strategy"
+    "github.com/souravmenon1999/trade-engine/framedCopy/exchange/bybit"
+    "github.com/souravmenon1999/trade-engine/framedCopy/exchange/injective"
+    "github.com/souravmenon1999/trade-engine/framedCopy/config"      // Adjust to your config package path
+    "github.com/souravmenon1999/trade-engine/framedCopy/strategy"
 )
 
 func main() {

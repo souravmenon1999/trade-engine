@@ -217,11 +217,11 @@ func (c *InjectiveWSClient) processTxMessage(message []byte, callback func(int64
 
 	// Calculate gas price for this transaction (in nanoINJ per gas unit)
 	txGasPrice := totalFee / gasUsed
-	log.Info().
-		Int64("fee", totalFee).
-		Int64("gas_used", gasUsed).
-		Int64("tx_gas_price", txGasPrice).
-		Msg("Calculated gas price from transaction")
+	// log.Info().
+	// 	Int64("fee", totalFee).
+	// 	Int64("gas_used", gasUsed).
+	// 	Int64("tx_gas_price", txGasPrice).
+	// 	Msg("Calculated gas price from transaction")
 
 	// Add to tracker and get new average
 	c.tracker.add(txGasPrice)

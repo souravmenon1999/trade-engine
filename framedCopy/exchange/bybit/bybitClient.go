@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"sync"
 	"time"
-"github.com/google/uuid"
+	"strconv"
+	"github.com/google/uuid"
+
 	zerologlog "github.com/rs/zerolog/log"
 	"github.com/souravmenon1999/trade-engine/framedCopy/config"
 	bybitWS "github.com/souravmenon1999/trade-engine/framedCopy/exchange/net/websockets/bybit"
@@ -22,11 +24,12 @@ type BybitClient struct {
 	updatesWS *bybitWS.BybitWSClient
 	subs      sync.Map
 	symbol    string
+	orderUpdateCallback func(*types.OrderUpdate) 
 }
 
 func (c *BybitClient) RegisterOrderUpdateCallback(callback func(*types.OrderUpdate)) {
-    zerologlog.Info().Msg("BybitClient does not support order update callbacks yet")
-    // Placeholder: no action taken for now
+	c.orderUpdateCallback = callback
+	zerologlog.Info().Msg("Registered order update callback for Bybit")
 }
 
 // NewBybitClient creates and initializes a Bybit client, automatically connecting,
@@ -222,8 +225,8 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 		zerologlog.Error().Err(err).Str("ws_type", wsType).Str("raw_message", string(message)).Msg("Error unmarshaling message")
 		return
 	}
-	// zerologlog.Debug().Str("ws_type", wsType).Interface("message", msg).Msg("Received WebSocket message")
 
+	// Handle operation messages (auth, subscribe, ping)
 	if op, ok := msg["op"].(string); ok {
 		switch op {
 		case "auth":
@@ -251,11 +254,98 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 		return
 	}
 
+	// Handle topic-based messages
 	topic, ok := msg["topic"].(string)
 	if !ok {
 		zerologlog.Warn().Str("ws_type", wsType).Str("raw_message", string(message)).Msg("Message without topic")
 		return
 	}
+
+	if topic == "order" && c.orderUpdateCallback != nil {
+		data, ok := msg["data"].([]interface{})
+		if !ok || len(data) == 0 {
+			zerologlog.Warn().Str("ws_type", wsType).Msg("Invalid order update data")
+			return
+		}
+
+		for _, item := range data {
+			orderData, ok := item.(map[string]interface{})
+			if !ok {
+				zerologlog.Warn().Str("ws_type", wsType).Msg("Invalid order data item")
+				continue
+			}
+
+			clientOrderID, ok := orderData["orderLinkId"].(string)
+			if !ok || clientOrderID == "" {
+				zerologlog.Warn().Str("ws_type", wsType).Msg("Missing or invalid orderLinkId")
+				continue
+			}
+
+			// Create a minimal Order for the update (strategy.go will look up the full Order)
+			minimalOrder := &types.Order{
+				ClientOrderID: uuid.MustParse(clientOrderID),
+				ExchangeID:    types.ExchangeIDBybit,
+			}
+
+			orderID, _ := orderData["orderId"].(string)
+			status, _ := orderData["orderStatus"].(string)
+			price, _ := orderData["price"].(string)
+			filledQty, _ := orderData["cumExecQty"].(string)
+
+			var updateType types.OrderUpdateType
+			var success bool
+			switch status {
+			case "New", "Created":
+				updateType = types.OrderUpdateTypeCreated
+				success = true
+			case "Filled":
+				updateType = types.OrderUpdateTypeFill
+				success = true
+			case "PartiallyFilled":
+				updateType = types.OrderUpdateTypeFill
+				success = true
+			case "Cancelled":
+				updateType = types.OrderUpdateTypeCanceled
+				success = true
+			case "Rejected":
+				updateType = types.OrderUpdateTypeRejected
+				success = false
+			default:
+				zerologlog.Warn().Str("status", status).Msg("Unknown order status")
+				continue
+			}
+
+			fillQty, err := strconv.ParseFloat(filledQty, 64)
+			if err != nil {
+				zerologlog.Warn().Err(err).Str("filledQty", filledQty).Msg("Invalid filled quantity")
+				continue
+			}
+			fillPrice, err := strconv.ParseFloat(price, 64)
+			if err != nil {
+				zerologlog.Warn().Err(err).Str("price", price).Msg("Invalid price")
+				continue
+			}
+			requestID := clientOrderID
+
+			update := types.NewOrderUpdate(
+				minimalOrder,
+				updateType,
+				success,
+				time.Now().UnixMilli(),
+			)
+			update.ExchangeOrderID = &orderID
+			update.FillQty = &fillQty
+			update.FillPrice = &fillPrice
+			update.RequestID = &requestID
+			update.IsMaker = orderData["isMaker"] == true
+
+			c.orderUpdateCallback(update)
+			zerologlog.Debug().Str("clientOrderID", clientOrderID).Str("updateType", string(updateType)).Msg("Dispatched order update")
+		}
+		return
+	}
+
+	// Handle other topics via subscription callbacks
 	if callback, ok := c.subs.Load(topic); ok {
 		go callback.(func([]byte))(message)
 		// zerologlog.Debug().Str("ws_type", wsType).Str("topic", topic).Msg("Dispatched message to callback")
@@ -266,52 +356,54 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 
 // SendOrder sends a trading order (unchanged)
 func (c *BybitClient) SendOrder(order *types.Order) (string, error) {
-    // Generate temporary order ID immediately to return
-    tempOrderID := fmt.Sprintf("bybit-%s", uuid.New().String())
-    
-    // Launch order processing in goroutine
-    go func() {
-        // Copy necessary values to avoid closure issues
-        symbol := order.Instrument.BaseCurrency + order.Instrument.QuoteCurrency
-        side := order.Side
-        price := order.Price.Load()
-        
-        timestamp := time.Now().UnixMilli()
-        recvWindow := 5000
-        signature := c.generateSignature(fmt.Sprintf("%d%d", timestamp, recvWindow))
+	clientOrderID := order.ClientOrderID.String()
+	go func() {
+		symbol := order.Instrument.BaseCurrency + order.Instrument.QuoteCurrency
+		side := string(order.Side)
+		price := order.GetPrice() // Unscaled price
+		quantity := order.GetQuantity() // Unscaled quantity
 
-        orderMsg := map[string]interface{}{
-            "op": "order.create",
-            "args": []interface{}{
-                map[string]interface{}{
-                    "symbol":      symbol,
-                    "side":        side,
-                    "orderType":   "Limit",
-                    "qty":         ".01",
-                    "price":       fmt.Sprintf("%d", price),
-                    "category":    "linear",
-                    "timeInForce": "GTC",
-                },
-            },
-            "header": map[string]interface{}{
-                "X-BAPI-TIMESTAMP":   timestamp,
-                "X-BAPI-RECV-WINDOW": recvWindow,
-                "X-BAPI-SIGN":        signature,
-                "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
-            },
-        }
+		timestamp := time.Now().UnixMilli()
+		recvWindow := 5000
+		signature := c.generateSignature(fmt.Sprintf("%d%d", timestamp, recvWindow))
 
-        orderJSON, _ := json.Marshal(orderMsg)
-        zerologlog.Debug().Str("order_message", string(orderJSON)).Msg("Sending order to Bybit")
-        
-        if err := c.tradingWS.SendJSON(orderMsg); err != nil {
-            zerologlog.Error().Err(err).Msg("Failed to send order")
-        } else {
-            zerologlog.Info().Msgf("Order sent for %s", symbol)
-        }
-    }()
+		orderMsg := map[string]interface{}{
+			"op": "order.create",
+			"args": []interface{}{
+				map[string]interface{}{
+					"symbol":      symbol,
+					"side":        side,
+					"orderType":   string(order.OrderType),
+					"qty":         fmt.Sprintf("%f", quantity),
+					"price":       fmt.Sprintf("%f", price),
+					"category":    "linear",
+					"timeInForce": string(order.TimeInForce),
+					"orderLinkId": clientOrderID,
+				},
+			},
+			"header": map[string]interface{}{
+				"X-BAPI-TIMESTAMP":   timestamp,
+				"X-BAPI-RECV-WINDOW": recvWindow,
+				"X-BAPI-SIGN":        signature,
+				"X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
+			},
+		}
 
-    return tempOrderID, nil
+		orderJSON, err := json.Marshal(orderMsg)
+		if err != nil {
+			zerologlog.Error().Err(err).Msg("Failed to marshal order message")
+			return
+		}
+		zerologlog.Debug().Str("order_message", string(orderJSON)).Msg("Sending order to Bybit")
+
+		if err := c.tradingWS.SendJSON(orderMsg); err != nil {
+			zerologlog.Error().Err(err).Msg("Failed to send order")
+		} else {
+			zerologlog.Info().Msgf("Order sent for %s with clientOrderID: %s", symbol, clientOrderID)
+		}
+	}()
+
+	return clientOrderID, nil
 }
 
 // CancelOrder cancels an order asynchronously (fire-and-forget)

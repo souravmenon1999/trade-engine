@@ -124,7 +124,7 @@ log.Printf("reached beof tradeclient")
 
 func (c *InjectiveClient) handleGasPriceUpdate(gasPrice int64) {
     c.latestGasPrice.Store(gasPrice)
-     zerolog.Info().Int64("gas_price", gasPrice).Msg("Updated gas price")
+    //  zerolog.Info().Int64("gas_price", gasPrice).Msg("Updated gas price")
 }
 
 // RegisterOrderUpdateCallback sets the callback for order updates
@@ -250,11 +250,11 @@ func (c *InjectiveClient) GetSenderAddress() string {
 
 // SendOrder creates and sends a derivative order
 func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
-    // Immediately launch goroutine without any result tracking
-     func() {
-        price := decimal.NewFromInt(order.Price.Load())
-        quantity := decimal.NewFromFloat(order.Quantity.ToFloat64())
-        leverage := decimal.NewFromInt(1)
+    clientOrderID := order.ClientOrderID.String()
+     go func() {
+      price := decimal.NewFromFloat(order.GetPrice())
+		quantity := decimal.NewFromFloat(order.GetQuantity())
+		leverage := decimal.NewFromInt(1)
 
         marketsAssistant, err := chainclient.NewMarketsAssistant(c.ctx, c.tradeClient)
         if err != nil {
@@ -284,25 +284,25 @@ func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
         }
         defaultSubaccountID := c.tradeClient.DefaultSubaccount(senderAddress)
 
-        orderData := c.tradeClient.CreateDerivativeOrder(
-            defaultSubaccountID,
-            &chainclient.DerivativeOrderData{
-                OrderType:    orderType,
-                Quantity:     quantity,
-                Price:        price,
-                Leverage:     leverage,
-                FeeRecipient: c.senderAddress,
-                MarketId:     c.marketId,
-                IsReduceOnly: false,
-                Cid:          uuid.NewString(),
-            },
-            marketsAssistant,
-        )
+      orderData := c.tradeClient.CreateDerivativeOrder(
+			defaultSubaccountID,
+			&chainclient.DerivativeOrderData{
+				OrderType:    orderType,
+				Quantity:     quantity,
+				Price:        price,
+				Leverage:     leverage,
+				FeeRecipient: c.senderAddress,
+				MarketId:     c.marketId,
+				IsReduceOnly: false,
+				Cid:          clientOrderID,
+			},
+			marketsAssistant,
+		)
 
-        msg := &exchangetypes.MsgCreateDerivativeLimitOrder{
-            Sender: c.senderAddress,
-            Order:  exchangetypes.DerivativeOrder(*orderData),
-        }
+		msg := &exchangetypes.MsgCreateDerivativeLimitOrder{
+			Sender: c.senderAddress,
+			Order:  exchangetypes.DerivativeOrder(*orderData),
+		}
 
         // simRes, err := c.tradeClient.SimulateMsg(c.clientCtx, msg)
         // if err != nil {
@@ -325,7 +325,7 @@ func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
     }()
 
     // Immediate return for fire-and-forget
-    return "", nil
+   return clientOrderID, nil
 }
 
 // CancelOrder cancels an existing derivative order
@@ -411,53 +411,63 @@ func parseOrderUpdate(raw *derivativeExchangePB.StreamOrdersHistoryResponse) (*t
         return nil, fmt.Errorf("nil order in response")
     }
 
-    // Map Injective state to OrderStatus
-    var status types.OrderStatus
-    switch order.State {
-    case "booked":
-        status = types.OrderStatusOpen
-    case "partial_filled":
-        status = types.OrderStatusPartiallyFilled
-    case "filled":
-        status = types.OrderStatusFilled
-    case "canceled":
-        status = types.OrderStatusCancelled
-    default:
-        status = types.OrderStatusSubmitted
-    }
+    clientOrderID := order.Cid
+	if clientOrderID == "" {
+		return nil, fmt.Errorf("missing client order ID")
+	}
 
-    // Parse decimal values
-    priceDec, err := decimal.NewFromString(order.Price)
-    if err != nil {
-        return nil, fmt.Errorf("invalid price: %v", err)
-    }
-    quantityDec, err := decimal.NewFromString(order.Quantity)
-    if err != nil {
-        return nil, fmt.Errorf("invalid quantity: %v", err)
-    }
-    filledQuantityDec, err := decimal.NewFromString(order.FilledQuantity)
-    if err != nil {
-        return nil, fmt.Errorf("invalid filled quantity: %v", err)
-    }
+    minimalOrder := &types.Order{
+		ClientOrderID: uuid.MustParse(clientOrderID),
+		Instrument: &types.Instrument{
+			Symbol: order.MarketId,
+		},
+		Side: types.Side(strings.ToLower(order.Direction)),
+	}
 
-    // Convert decimals to float64
-    quantityFloat, _ := quantityDec.Float64()
-    filledQtyFloat, _ := filledQuantityDec.Float64()
+  var updateType types.OrderUpdateType
+	var success bool
+	switch order.State {
+	case "booked":
+		updateType = types.OrderUpdateTypeCreated
+		success = true
+	case "partial_filled":
+		updateType = types.OrderUpdateTypeFill
+		success = true
+	case "filled":
+		updateType = types.OrderUpdateTypeFill
+		success = true
+	case "canceled":
+		updateType = types.OrderUpdateTypeCanceled
+		success = true
+	default:
+		updateType = types.OrderUpdateTypeCreated
+		success = true
+	}
 
-    // Create the OrderUpdate struct
-    update := &types.OrderUpdate{
-        Order: &types.Order{
-            ExchangeID: types.ExchangeIDInjective,
-            Instrument: &types.Instrument{
-                Symbol: order.MarketId,
-            },
-            Price:    types.NewPrice(priceDec.Mul(decimal.NewFromInt(types.SCALE_FACTOR)).IntPart()),
-            Quantity: types.NewQuantity(quantityFloat),
-            Side:     strings.ToLower(order.Direction),
-        },
-        Status:         status,
-        FilledQuantity: types.NewQuantity(filledQtyFloat),
-    }
+	priceDec, err := decimal.NewFromString(order.Price)
+	if err != nil {
+		return nil, fmt.Errorf("invalid price: %v", err)
+	}
+	filledQuantityDec, err := decimal.NewFromString(order.FilledQuantity)
+	if err != nil {
+		return nil, fmt.Errorf("invalid filled quantity: %v", err)
+	}
 
-    return update, nil
+	fillQty, _ := filledQuantityDec.Float64()
+	fillPrice, _ := priceDec.Float64()
+	orderHash := order.OrderHash
+	requestID := clientOrderID
+
+	update := types.NewOrderUpdate(
+		minimalOrder,
+		updateType,
+		success,
+		raw.Timestamp,
+	)
+	update.ExchangeOrderID = &orderHash
+	update.FillQty = &fillQty
+	update.FillPrice = &fillPrice
+	update.RequestID = &requestID
+
+	return update, nil
 }

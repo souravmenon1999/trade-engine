@@ -78,13 +78,14 @@ func (s *ArbitrageStrategy) HandleOrderUpdate(update *types.OrderUpdate) {
 			OrderType:       types.OrderTypeLimit,
 			ExchangeID:      types.ExchangeIDBybit,
 			TimeInForce:     types.TimeInForceGTC,
-			Quantity:        types.NewQuantity(order.GetFilledQuantity()),
+			Quantity:        atomic.Int64{},
 			CreatedAt:       atomic.Int64{},
 			UpdatedAt:       atomic.Int64{},
 		}
 		reverseOrder.Price.Store(order.Price.Load())
 		reverseOrder.CreatedAt.Store(time.Now().UnixMilli())
 		reverseOrder.UpdatedAt.Store(time.Now().UnixMilli())
+		reverseOrder.Quantity.Store(int64(order.GetFilledQuantity() * types.SCALE_FACTOR_F64))
 
 		_, err := s.SendOrder(reverseOrder)
 		if err != nil {
@@ -163,13 +164,14 @@ func (s *ArbitrageStrategy) Start() {
 		OrderType:   types.OrderTypeLimit,
 		TimeInForce: types.TimeInForceGTC,
 		Price:       atomic.Int64{},
-		Quantity:    types.NewQuantity(0.01),
+		Quantity:    atomic.Int64{},
 		CreatedAt:   atomic.Int64{},
 		UpdatedAt:   atomic.Int64{},
 	}
 	order.Price.Store(2000 * types.SCALE_FACTOR_F64)
 	order.CreatedAt.Store(time.Now().UnixMilli())
 	order.UpdatedAt.Store(time.Now().UnixMilli())
+	order.Quantity.Store(int64(0.01 * types.SCALE_FACTOR_F64))
 
 	clientOrderID, err := s.SendOrder(order)
 	if err != nil {
