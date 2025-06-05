@@ -3,8 +3,9 @@ package strategy
 import (
 	"fmt"
 	"sync"
-	"time"
 	"sync/atomic"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"github.com/souravmenon1999/trade-engine/framedCopy/config"
@@ -31,24 +32,25 @@ func NewArbitrageStrategy(bybitEx exchange.Exchange, injectiveEx exchange.Exchan
 		Cfg:       cfg,
 	}
 
-	// Register order update callbacks for both exchanges
-	injectiveEx.RegisterOrderUpdateCallback(strat.HandleOrderUpdate)
-	bybitEx.RegisterOrderUpdateCallback(strat.HandleOrderUpdate)
-
+	// Register both trading and execution handlers for both exchanges
+	injectiveEx.SetTradingHandler(strat)
+	injectiveEx.SetExecutionHandler(strat)
+	bybitEx.SetTradingHandler(strat)
+	bybitEx.SetExecutionHandler(strat)
 	return strat
 }
 
-// HandleOrderUpdate processes order updates from exchanges
-func (s *ArbitrageStrategy) HandleOrderUpdate(update *types.OrderUpdate) {
+// TradingHandler Interface Implementation
+
+// OnOrderUpdate processes order updates from exchanges
+func (s *ArbitrageStrategy) OnOrderUpdate(update *types.OrderUpdate) {
 	log.Info().Interface("update", update).Msg("Received order update")
 
-	// Validate the order reference
 	if update.Order == nil {
 		log.Error().Msg("Order update missing order reference")
 		return
 	}
 
-	// Look up the order in the map using RequestID (which stores ClientOrderID)
 	if update.RequestID == nil {
 		log.Error().Msg("Order update missing RequestID")
 		return
@@ -61,10 +63,8 @@ func (s *ArbitrageStrategy) HandleOrderUpdate(update *types.OrderUpdate) {
 	}
 	order := orderInterface.(*types.Order)
 
-	// Apply the update to the order
 	order.ApplyUpdate(update)
 
-	// Check if the order is filled and place a reverse order if so
 	if order.GetStatus() == types.OrderStatusFilled && order.GetFilledQuantity() > 0 {
 		reverseSide := types.SideSell
 		if order.Side == types.SideBuy {
@@ -72,15 +72,15 @@ func (s *ArbitrageStrategy) HandleOrderUpdate(update *types.OrderUpdate) {
 		}
 
 		reverseOrder := &types.Order{
-			ClientOrderID:   uuid.New(),
-			Instrument:      order.Instrument,
-			Side:            reverseSide,
-			OrderType:       types.OrderTypeLimit,
-			ExchangeID:      types.ExchangeIDBybit,
-			TimeInForce:     types.TimeInForceGTC,
-			Quantity:        atomic.Int64{},
-			CreatedAt:       atomic.Int64{},
-			UpdatedAt:       atomic.Int64{},
+			ClientOrderID: uuid.New(),
+			Instrument:    order.Instrument,
+			Side:          reverseSide,
+			OrderType:     types.OrderTypeLimit,
+			ExchangeID:    types.ExchangeIDBybit,
+			TimeInForce:   types.TimeInForceGTC,
+			Quantity:      atomic.Int64{},
+			CreatedAt:     atomic.Int64{},
+			UpdatedAt:     atomic.Int64{},
 		}
 		reverseOrder.Price.Store(order.Price.Load())
 		reverseOrder.CreatedAt.Store(time.Now().UnixMilli())
@@ -101,6 +101,54 @@ func (s *ArbitrageStrategy) HandleOrderUpdate(update *types.OrderUpdate) {
 	}
 }
 
+// OnForceCancel handles force cancel events
+func (s *ArbitrageStrategy) OnForceCancel(order *types.Order) {
+	log.Info().Str("order_id", order.ClientOrderID.String()).Msg("Force cancel received")
+}
+
+// OnOrderDisconnect handles disconnection events
+func (s *ArbitrageStrategy) OnOrderDisconnect() {
+	log.Warn().Msg("Order stream disconnected")
+}
+
+// OnOrderError handles error events
+func (s *ArbitrageStrategy) OnOrderError(error string) {
+	log.Error().Str("error", error).Msg("Order error received")
+}
+
+// OnOrderConnect handles connection events
+func (s *ArbitrageStrategy) OnOrderConnect() {
+	log.Info().Msg("Order stream connected")
+}
+
+// ExecutionHandler Interface Implementation
+
+// OnExecutionUpdate processes execution updates
+func (s *ArbitrageStrategy) OnExecutionUpdate(updates []*types.OrderUpdate) {
+	for _, update := range updates {
+		log.Info().
+			Str("clientOrderID", update.Order.ClientOrderID.String()).
+			Float64("fillQty", *update.FillQty).
+			Float64("fillPrice", *update.FillPrice).
+			Msg("Execution update received")
+	}
+}
+
+// OnExecutionConnect handles execution stream connection events
+func (s *ArbitrageStrategy) OnExecutionConnect() {
+	log.Info().Msg("Execution stream connected")
+}
+
+// OnExecutionDisconnect handles execution stream disconnection events
+func (s *ArbitrageStrategy) OnExecutionDisconnect() {
+	log.Warn().Msg("Execution stream disconnected")
+}
+
+// OnExecutionError handles execution stream error events
+func (s *ArbitrageStrategy) OnExecutionError(error string) {
+	log.Error().Str("error", error).Msg("Execution error received")
+}
+
 // SendOrder sends an order to the specified exchange
 func (s *ArbitrageStrategy) SendOrder(order *types.Order) (string, error) {
 	ex, ok := s.Exchanges[order.ExchangeID]
@@ -108,7 +156,6 @@ func (s *ArbitrageStrategy) SendOrder(order *types.Order) (string, error) {
 		return "", fmt.Errorf("no exchange found for ID: %s", order.ExchangeID)
 	}
 
-	// Ensure ClientOrderID and timestamps are set
 	if order.ClientOrderID == uuid.Nil {
 		order.ClientOrderID = uuid.New()
 	}
@@ -119,13 +166,11 @@ func (s *ArbitrageStrategy) SendOrder(order *types.Order) (string, error) {
 	}
 	order.UpdateStatus(types.OrderStatusSubmitted)
 
-	// Store the order in the map
 	s.Orders.Store(order.ClientOrderID.String(), order)
 
-	// Send the order to the exchange
 	clientOrderID, err := ex.SendOrder(order)
 	if err != nil {
-		s.Orders.Delete(order.ClientOrderID.String()) // Remove on failure
+		s.Orders.Delete(order.ClientOrderID.String())
 		return "", err
 	}
 
@@ -149,7 +194,6 @@ func (s *ArbitrageStrategy) Start() {
 	symbol := s.Cfg.BybitOrderbook.Symbol
 	log.Info().Str("symbol", symbol).Msg("Using symbol from config")
 
-	// Place an initial order on Injective
 	order := &types.Order{
 		ClientOrderID: uuid.New(),
 		ExchangeID:    types.ExchangeIDInjective,

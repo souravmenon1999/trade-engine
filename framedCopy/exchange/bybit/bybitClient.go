@@ -10,11 +10,12 @@ import (
 	"time"
 	"strconv"
 	"github.com/google/uuid"
-
+	"strings"
 	zerologlog "github.com/rs/zerolog/log"
 	"github.com/souravmenon1999/trade-engine/framedCopy/config"
 	bybitWS "github.com/souravmenon1999/trade-engine/framedCopy/exchange/net/websockets/bybit"
 	"github.com/souravmenon1999/trade-engine/framedCopy/types"
+	"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
 )
 
 // BybitClient manages WebSocket connections for Bybit exchange
@@ -24,12 +25,12 @@ type BybitClient struct {
 	updatesWS *bybitWS.BybitWSClient
 	subs      sync.Map
 	symbol    string
-	orderUpdateCallback func(*types.OrderUpdate) 
+	tradingHandler exchange.TradingHandler
 }
 
-func (c *BybitClient) RegisterOrderUpdateCallback(callback func(*types.OrderUpdate)) {
-	c.orderUpdateCallback = callback
-	zerologlog.Info().Msg("Registered order update callback for Bybit")
+func (c *BybitClient) SetTradingHandler(handler exchange.TradingHandler) {
+	c.tradingHandler = handler
+	zerologlog.Info().Msg("Set trading handler for Bybit")
 }
 
 // NewBybitClient creates and initializes a Bybit client, automatically connecting,
@@ -45,17 +46,14 @@ func NewBybitClient(cfg *config.Config) *BybitClient {
 	}
 	zerologlog.Info().Msg("BybitClient initialized with WebSocket configurations")
 
-	// Connect to WebSockets
-	if err := client.Connect(); err != nil {
+if err := client.Connect(); err != nil {
 		zerologlog.Fatal().Err(err).Msg("Failed to connect to Bybit WebSockets during initialization")
 	}
 
-	// Subscribe to topics
 	if err := client.SubscribeAll(cfg); err != nil {
 		zerologlog.Fatal().Err(err).Msg("Failed to subscribe to topics during initialization")
 	}
 
-	// Start reading messages
 	client.StartReading()
 	zerologlog.Info().Msg("Started reading messages from all Bybit WebSocket clients")
 
@@ -189,16 +187,21 @@ func (c *BybitClient) readLoop(ws *bybitWS.BybitWSClient, wsType string) {
 		message, err := ws.ReadMessage()
 		if err != nil {
 			zerologlog.Error().Err(err).Str("ws_type", wsType).Msg("Error reading message")
+			if wsType == "trading" && c.tradingHandler != nil {
+				c.tradingHandler.OnOrderDisconnect()
+			}
 			zerologlog.Info().Str("ws_type", wsType).Msg("Attempting to reconnect...")
 			for i := 0; i < 5; i++ {
 				if err := ws.Connect(); err == nil {
 					zerologlog.Info().Str("ws_type", wsType).Msg("Reconnected successfully")
-					// Re-subscribe to topics
+					if wsType == "trading" && c.tradingHandler != nil {
+						c.tradingHandler.OnOrderConnect()
+					}
 					c.subs.Range(func(key, value interface{}) bool {
 						topic := key.(string)
-						if (ws == c.publicWS && topic == "orderbook.50.ETHUSDT") ||
+						if (ws == c.publicWS && strings.HasPrefix(topic, "orderbook.")) ||
 							(ws == c.tradingWS && topic == "order") ||
-							(ws == c.updatesWS && topic == "position") {
+							(ws == c.updatesWS && (topic == "position" || topic == "execution.fast" || topic == "wallet")) {
 							if err := ws.Subscribe(topic); err != nil {
 								zerologlog.Error().Err(err).Str("topic", topic).Msg("Failed to re-subscribe after reconnect")
 							} else {
@@ -223,10 +226,12 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 	var msg map[string]interface{}
 	if err := json.Unmarshal(message, &msg); err != nil {
 		zerologlog.Error().Err(err).Str("ws_type", wsType).Str("raw_message", string(message)).Msg("Error unmarshaling message")
+		if wsType == "trading" && c.tradingHandler != nil {
+			c.tradingHandler.OnOrderError(fmt.Sprintf("Error unmarshaling message: %v", err))
+		}
 		return
 	}
 
-	// Handle operation messages (auth, subscribe, ping)
 	if op, ok := msg["op"].(string); ok {
 		switch op {
 		case "auth":
@@ -254,14 +259,13 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 		return
 	}
 
-	// Handle topic-based messages
 	topic, ok := msg["topic"].(string)
 	if !ok {
 		zerologlog.Warn().Str("ws_type", wsType).Str("raw_message", string(message)).Msg("Message without topic")
 		return
 	}
 
-	if topic == "order" && c.orderUpdateCallback != nil {
+	if topic == "order" && c.tradingHandler != nil {
 		data, ok := msg["data"].([]interface{})
 		if !ok || len(data) == 0 {
 			zerologlog.Warn().Str("ws_type", wsType).Msg("Invalid order update data")
@@ -281,7 +285,6 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 				continue
 			}
 
-			// Create a minimal Order for the update (strategy.go will look up the full Order)
 			minimalOrder := &types.Order{
 				ClientOrderID: uuid.MustParse(clientOrderID),
 				ExchangeID:    types.ExchangeIDBybit,
@@ -339,16 +342,14 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 			update.RequestID = &requestID
 			update.IsMaker = orderData["isMaker"] == true
 
-			c.orderUpdateCallback(update)
+			c.tradingHandler.OnOrderUpdate(update)
 			zerologlog.Debug().Str("clientOrderID", clientOrderID).Str("updateType", string(updateType)).Msg("Dispatched order update")
 		}
 		return
 	}
 
-	// Handle other topics via subscription callbacks
 	if callback, ok := c.subs.Load(topic); ok {
 		go callback.(func([]byte))(message)
-		// zerologlog.Debug().Str("ws_type", wsType).Str("topic", topic).Msg("Dispatched message to callback")
 	} else {
 		zerologlog.Warn().Str("ws_type", wsType).Str("topic", topic).Msg("No callback for topic")
 	}
