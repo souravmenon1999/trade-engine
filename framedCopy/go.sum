@@ -847,8 +847,8 @@ github.com/smartystreets/assertions v0.0.0-20180927180507-b2de0cb4f26d/go.mod h1
 github.com/smartystreets/goconvey v1.6.4/go.mod h1:syvi0/a8iFYH4r/RixwvyeAJjdLS9QV7WQ/tjFTllLA=
 github.com/soheilhy/cmux v0.1.4/go.mod h1:IM3LyeVVIOuxMH7sFAkER9+bJ4dT7Ms6E4xg4kGIyLM=
 github.com/sony/gobreaker v0.4.1/go.mod h1:ZKptC7FHNvhBz7dN2LGjPVBz2sZJmc0/PkyDJOjmxWY=
-github.com/souravmenon1999/trade-engine/framed v0.0.0-20250604221752-79a4b25c317d h1:eKyevxEEQaawyheh3TwWbfPYHqPddypMoiCHzFPJ4mo=
-github.com/souravmenon1999/trade-engine/framed v0.0.0-20250604221752-79a4b25c317d/go.mod h1:H0zsXFXvguryPhIweu8XOgEJuG3ED9T1TJpjnSePwMQ=
+github.com/souravmenon1999/trade-engine/framed v0.0.0-20250605013629-4437337e1869 h1:eWu92uDOFyEiH1MnTr4I4K5SYXijHPTjaltnVQYao5U=
+github.com/souravmenon1999/trade-engine/framed v0.0.0-20250605013629-4437337e1869/go.mod h1:H0zsXFXvguryPhIweu8XOgEJuG3ED9T1TJpjnSePwMQ=
 github.com/sourcegraph/conc v0.3.0 h1:OQTbbt6P72L20UqAkXXuLOj79LfEanQ+YQFNpLA9ySo=
 github.com/sourcegraph/conc v0.3.0/go.mod h1:Sdozi7LEKbFPqYX2/J+iBAM6HpqSLTASQIKqDmF7Mt0=
 github.com/spaolacci/murmur3 v1.1.0 h1:7c1g84S4BPRrfL5Xrdp6fOJ206sU9y293DDHaoy0bLI=

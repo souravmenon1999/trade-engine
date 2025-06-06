@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
 	exchangetypes "github.com/InjectiveLabs/sdk-go/chain/exchange/types"
 	chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
 	"github.com/InjectiveLabs/sdk-go/client/common"
@@ -16,39 +18,35 @@ import (
 	"github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/cosmos-sdk/client"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
 	"github.com/souravmenon1999/trade-engine/framedCopy/exchange/net/websockets/injective"
 	"github.com/souravmenon1999/trade-engine/framedCopy/types"
-	"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
-
 )
-
-
-// TradingHandler defines the interface for handling trading events
-
 
 // InjectiveClient manages connections and subscriptions for Injective Protocol
 type InjectiveClient struct {
-	tradeClient   chainclient.ChainClient
-	updatesClient exchangeclient.ExchangeClient
-	senderAddress string
-	wsClient      *injectivews.InjectiveWSClient
-	clientCtx     client.Context
-	ctx           context.Context
-	cancel        context.CancelFunc
-	marketId      string
-    subaccountId  string
-	latestGasPrice      atomic.Int64
-	tradingHandler exchange.TradingHandler
+	tradeClient      chainclient.ChainClient
+	updatesClient    exchangeclient.ExchangeClient
+	senderAddress    string
+	wsClient         *injectivews.InjectiveWSClient
+	clientCtx        client.Context
+	ctx              context.Context
+	cancel           context.CancelFunc
+	marketId         string
+	subaccountId     string
+	latestGasPrice   atomic.Int64
+	tradingHandler   exchange.TradingHandler
 	executionHandler exchange.ExecutionHandler
+	orderFillTracker map[string]float64 // Tracks cumulative filled quantity per order
+	fillTrackerMutex sync.Mutex         // Ensures thread safety
 }
 
-// NewInjectiveClient creates and initializes a new Injective client with callbacks for order history and funding rates
+// NewInjectiveClient creates and initializes a new Injective client
 func NewInjectiveClient(
 	networkName, lb, privKey, marketId, subaccountId string,
 ) (*InjectiveClient, error) {
-	log.Printf("started")
+	log.Printf("Starting InjectiveClient initialization")
 	network := common.LoadNetwork(networkName, lb)
 
 	tmClient, err := http.New(network.TmEndpoint, "/websocket")
@@ -62,7 +60,7 @@ func NewInjectiveClient(
 	if err != nil {
 		return nil, fmt.Errorf("failed to init keyring: %w", err)
 	}
-	log.Printf("reached before chainclient")
+
 	clientCtx, err := chainclient.NewClientContext(
 		network.ChainId, senderAddress.String(), cosmosKeyring,
 	)
@@ -70,7 +68,7 @@ func NewInjectiveClient(
 		return nil, fmt.Errorf("failed to create client context: %w", err)
 	}
 	clientCtx = clientCtx.WithNodeURI(network.TmEndpoint).WithClient(tmClient)
-	log.Printf("reached before tradeclient")
+
 	tradeClient, err := chainclient.NewChainClient(
 		clientCtx, network, common.OptionGasPrices("0.0005inj"),
 	)
@@ -103,8 +101,7 @@ func NewInjectiveClient(
 		marketId:         marketId,
 		subaccountId:     subaccountId,
 		latestGasPrice:   atomic.Int64{},
-		tradingHandler:   nil,
-		executionHandler: nil,
+		orderFillTracker: make(map[string]float64),
 	}
 
 	if client.wsClient != nil {
@@ -120,9 +117,9 @@ func NewInjectiveClient(
 	return client, nil
 }
 
+// handleGasPriceUpdate updates the latest gas price
 func (c *InjectiveClient) handleGasPriceUpdate(gasPrice int64) {
-    c.latestGasPrice.Store(gasPrice)
-    //  zerolog.Info().Int64("gas_price", gasPrice).Msg("Updated gas price")
+	c.latestGasPrice.Store(gasPrice)
 }
 
 // SetTradingHandler sets the trading handler
@@ -169,7 +166,7 @@ func (c *InjectiveClient) subscribeOrderHistoryWithRetry(marketId, subaccountId 
 	}
 }
 
-// SubscribeOrderHistory subscribes to order history updates and processes both trading and execution events
+// SubscribeOrderHistory subscribes to order history updates
 func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string) error {
 	log.Printf("Starting order history for Market: %s, Subaccount: %s", marketId, subaccountId)
 
@@ -203,39 +200,110 @@ func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string) e
 		default:
 			res, err := stream.Recv()
 			if err != nil {
-				if c.tradingHandler != nil {
-					c.tradingHandler.OnOrderError(fmt.Sprintf("Error receiving order: %v", err))
-					c.tradingHandler.OnOrderDisconnect()
-				}
-				if c.executionHandler != nil {
-					c.executionHandler.OnExecutionError(fmt.Sprintf("Error receiving order: %v", err))
-					c.executionHandler.OnExecutionDisconnect()
-				}
-				return err
+				return fmt.Errorf("stream recv error: %w", err)
 			}
-			log.Printf("order raw: %v", res)
-			go func(raw *derivativeExchangePB.StreamOrdersHistoryResponse) {
-				update, err := parseOrderUpdate(raw)
-				if err != nil {
-					if c.tradingHandler != nil {
-						c.tradingHandler.OnOrderError(fmt.Sprintf("Error parsing order update: %v", err))
-					}
-					if c.executionHandler != nil {
-						c.executionHandler.OnExecutionError(fmt.Sprintf("Error parsing order update: %v", err))
-					}
-					return
-				}
-				if c.tradingHandler != nil {
-					c.tradingHandler.OnOrderUpdate(update)
-				}
-				if update.UpdateType == types.OrderUpdateTypeFill && c.executionHandler != nil {
-					c.executionHandler.OnExecutionUpdate([]*types.OrderUpdate{update})
-				}
-			}(res)
+			log.Printf("RAW %v", res)
+			if res.Order != nil {
+				c.handleOrderUpdate(res.Order, res.Timestamp, res.OperationType)
+			}
 		}
 	}
 }
- 
+
+// handleOrderUpdate processes order updates for trading and execution handlers
+func (c *InjectiveClient) handleOrderUpdate(raw *derivativeExchangePB.DerivativeOrderHistory, timestamp int64, operationType string) {
+	orderUpdate := c.parseOrderUpdate(raw, timestamp, operationType)
+	if orderUpdate == nil {
+		return
+	}
+	if c.tradingHandler != nil {
+		c.tradingHandler.OnOrderUpdate(orderUpdate)
+	}
+	if c.executionHandler != nil && orderUpdate.UpdateType == types.OrderUpdateTypeFill {
+		c.handleExecutionUpdate(orderUpdate)
+	}
+}
+
+// parseOrderUpdate converts raw order data to an OrderUpdate type
+func (c *InjectiveClient) parseOrderUpdate(raw *derivativeExchangePB.DerivativeOrderHistory, timestamp int64, operationType string) *types.OrderUpdate {
+	var updateType types.OrderUpdateType
+	switch operationType {
+	case "insert":
+		updateType = types.OrderUpdateTypeCreated
+	case "update":
+		if raw.State == "partial_filled" || raw.State == "filled" {
+			updateType = types.OrderUpdateTypeFill
+		} else if raw.State == "canceled" {
+			updateType = types.OrderUpdateTypeCanceled
+		} else {
+			updateType = types.OrderUpdateTypeOther
+		}
+	case "replace":
+		updateType = types.OrderUpdateTypeAmended
+	case "invalidate":
+		updateType = types.OrderUpdateTypeRejected
+	default:
+		updateType = types.OrderUpdateTypeOther
+	}
+
+	var status types.OrderStatus
+	switch raw.State {
+	case "booked":
+		status = types.OrderStatusOpen
+	case "partial_filled":
+		status = types.OrderStatusPartiallyFilled
+	case "filled":
+		status = types.OrderStatusFilled
+	case "canceled":
+		status = types.OrderStatusCancelled
+	default:
+		status = types.OrderStatusUnknown
+	}
+
+	filledQuantityDec, err := decimal.NewFromString(raw.FilledQuantity)
+	if err != nil {
+		log.Printf("Invalid filled quantity: %v", err)
+		return nil
+	}
+	filledQuantity, _ := filledQuantityDec.Float64()
+
+	priceDec, err := decimal.NewFromString(raw.Price)
+	if err != nil {
+		log.Printf("Invalid price: %v", err)
+		return nil
+	}
+	price, _ := priceDec.Float64()
+
+	update := &types.OrderUpdate{
+		Success:         true,
+		UpdateType:      updateType,
+		Status:          status,
+		ErrorMessage:    nil,
+		RequestID:       &raw.Cid,
+		ExchangeOrderID: &raw.OrderHash,
+		FillQty:         &filledQuantity,
+		FillPrice:       &price,
+		UpdatedAt:       raw.UpdatedAt,
+		IsMaker:         false,
+		AmendType:       "",
+		NewPrice:        nil,
+		NewQty:          nil,
+	}
+
+	return update
+}
+
+// handleExecutionUpdate notifies the execution handler with the OrderUpdate
+func (c *InjectiveClient) handleExecutionUpdate(orderUpdate *types.OrderUpdate) {
+	c.fillTrackerMutex.Lock()
+	defer c.fillTrackerMutex.Unlock()
+
+	if orderUpdate.FillQty != nil && *orderUpdate.FillQty > 0 {
+		c.orderFillTracker[*orderUpdate.ExchangeOrderID] = *orderUpdate.FillQty
+		c.executionHandler.OnExecutionUpdate([]*types.OrderUpdate{orderUpdate})
+	}
+}
+
 // SubscribeFundingRates subscribes to funding rate updates
 func (c *InjectiveClient) SubscribeFundingRates(marketId string, callback func([]byte)) error {
 	stream, err := c.updatesClient.StreamDerivativeMarket(c.ctx, []string{marketId})
@@ -275,14 +343,6 @@ func (c *InjectiveClient) SubscribeFundingRates(marketId string, callback func([
 	return nil
 }
 
-// GetSenderAddress returns the sender's address
-func (c *InjectiveClient) GetSenderAddress() string {
-	return c.senderAddress
-}
-
-
-
-
 // SendOrder creates and sends a derivative order
 func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
 	clientOrderID := order.ClientOrderID.String()
@@ -302,14 +362,11 @@ func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
 			orderType = exchangetypes.OrderType_SELL
 		}
 
-		// gasPrice := c.latestGasPrice.Load()
-        // if gasPrice == 0 {
-        //     gasPrice = c.tradeClient.CurrentChainGasPrice()
-        // }
-      
-        // badPrice := c.tradeClient.CurrentChainGasPrice()
-		gasPrice := c.tradeClient.CurrentChainGasPrice()
-        c.tradeClient.SetGasPrice(gasPrice)
+		gasPrice := c.latestGasPrice.Load()
+		if gasPrice == 0 {
+			gasPrice = c.tradeClient.CurrentChainGasPrice()
+		}
+		c.tradeClient.SetGasPrice(gasPrice)
 
 		senderAddress, err := sdk.AccAddressFromBech32(c.senderAddress)
 		if err != nil {
@@ -411,76 +468,11 @@ func (c *InjectiveClient) CancelOrder(orderHash string) error {
 	return nil
 }
 
-// Close properly shuts down the client
+// Shutdown gracefully shuts down the client
 func (c *InjectiveClient) Close() {
-	if c.cancel != nil {
-		c.cancel()
+	c.cancel()
+	if c.wsClient != nil {
+		c.wsClient.Close()
 	}
-}
-
-func parseOrderUpdate(raw *derivativeExchangePB.StreamOrdersHistoryResponse) (*types.OrderUpdate, error) {
-	order := raw.Order
-	if order == nil {
-		return nil, fmt.Errorf("nil order in response")
-	}
-
-	clientOrderID := order.Cid
-	if clientOrderID == "" {
-		return nil, fmt.Errorf("missing client order ID")
-	}
-
-	minimalOrder := &types.Order{
-		ClientOrderID: uuid.MustParse(clientOrderID),
-		Instrument: &types.Instrument{
-			Symbol: order.MarketId,
-		},
-		Side: types.Side(strings.ToLower(order.Direction)),
-	}
-
-	var updateType types.OrderUpdateType
-	var success bool
-	switch order.State {
-	case "booked":
-		updateType = types.OrderUpdateTypeCreated
-		success = true
-	case "partial_filled":
-		updateType = types.OrderUpdateTypeFill
-		success = true
-	case "filled":
-		updateType = types.OrderUpdateTypeFill
-		success = true
-	case "canceled":
-		updateType = types.OrderUpdateTypeCanceled
-		success = true
-	default:
-		updateType = types.OrderUpdateTypeCreated
-		success = true
-	}
-
-	priceDec, err := decimal.NewFromString(order.Price)
-	if err != nil {
-		return nil, fmt.Errorf("invalid price: %v", err)
-	}
-	filledQuantityDec, err := decimal.NewFromString(order.FilledQuantity)
-	if err != nil {
-		return nil, fmt.Errorf("invalid filled quantity: %v", err)
-	}
-
-	fillQty, _ := filledQuantityDec.Float64()
-	fillPrice, _ := priceDec.Float64()
-	orderHash := order.OrderHash
-	requestID := clientOrderID
-
-	update := types.NewOrderUpdate(
-		minimalOrder,
-		updateType,
-		success,
-		raw.Timestamp,
-	)
-	update.ExchangeOrderID = &orderHash
-	update.FillQty = &fillQty
-	update.FillPrice = &fillPrice
-	update.RequestID = &requestID
-
-	return update, nil
+	log.Println("🛑 Injective client shut down")
 }

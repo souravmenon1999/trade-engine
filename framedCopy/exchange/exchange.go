@@ -5,7 +5,6 @@ import "github.com/souravmenon1999/trade-engine/framedCopy/types"
 type Exchange interface {
     SendOrder(order *types.Order) (string, error)
     CancelOrder(orderID string) error
-    RegisterOrderUpdateCallback(callback func(*types.OrderUpdate))
     SetTradingHandler(handler TradingHandler)
     SetExecutionHandler(handler ExecutionHandler)
 }

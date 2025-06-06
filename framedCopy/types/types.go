@@ -4,16 +4,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"github.com/google/uuid"
 
+	"github.com/google/uuid"
 )
 
 const (
-	SCALE_FACTOR    = 1_000_000
+	SCALE_FACTOR     = 1_000_000
 	SCALE_FACTOR_F64 = 1_000_000.0
-	UNSET_VALUE     = -1
+	UNSET_VALUE      = -1
 )
-
 
 // Price is a struct embedding atomic.Int64 for thread-safe price values.
 type Price struct {
@@ -28,8 +27,8 @@ type Quantity struct {
 type ExchangeID string
 
 const (
-    ExchangeIDBybit     ExchangeID = "bybit"
-    ExchangeIDInjective ExchangeID = "injective"
+	ExchangeIDBybit     ExchangeID = "bybit"
+	ExchangeIDInjective ExchangeID = "injective"
 )
 
 // NewPrice creates a new Price with an initial value and returns a pointer.
@@ -41,13 +40,13 @@ func NewPrice(val int64) *Price {
 
 // NewQuantity creates a new Quantity with an initial value and returns a pointer.
 func NewQuantity(val float64) *Quantity {
-    q := &Quantity{}
-    q.Store(int64(val * SCALE_FACTOR))
-    return q
+	q := &Quantity{}
+	q.Store(int64(val * SCALE_FACTOR))
+	return q
 }
 
 func (q *Quantity) ToFloat64() float64 {
-    return float64(q.Load()) / SCALE_FACTOR
+	return float64(q.Load()) / SCALE_FACTOR
 }
 
 // Instrument represents a trading instrument.
@@ -62,11 +61,11 @@ type Instrument struct {
 // OrderBook represents the state of an order book with atomic fields.
 type OrderBook struct {
 	Instrument     *Instrument
-	Asks           sync.Map 
-	Bids           sync.Map 
+	Asks           sync.Map
+	Bids           sync.Map
 	LastUpdateTime atomic.Int64
 	Sequence       atomic.Int64
-	Exchange       *ExchangeID  
+	Exchange       *ExchangeID
 }
 
 // OrderBookWithVWAP combines an order book with its VWAP.
@@ -75,7 +74,6 @@ type OrderBookWithVWAP struct {
 	VWAP      *Price
 }
 
-// Order represents a trading order.
 // Side defines the order side.
 type Side string
 
@@ -136,20 +134,20 @@ const (
 
 // Order represents a trading order.
 type Order struct {
-	ClientOrderID   uuid.UUID     // Unique client-generated ID
-	Instrument      *Instrument   // Trading instrument
-	Side            Side          // Buy or Sell
-	OrderType       OrderType     // Limit or Market
-	ExchangeID      ExchangeID    // Bybit or Injective
-	TimeInForce     TimeInForce   // GTC or IOC
-	ExchangeOrderID string        // Order ID assigned by the exchange
+	ClientOrderID   uuid.UUID   // Unique client-generated ID
+	Instrument      *Instrument // Trading instrument
+	Side            Side        // Buy or Sell
+	OrderType       OrderType   // Limit or Market
+	ExchangeID      ExchangeID  // Bybit or Injective
+	TimeInForce     TimeInForce // GTC or IOC
+	ExchangeOrderID string      // Order ID assigned by the exchange
 	// Thread-safe fields
-	Status         atomic.Int64  // Order status
-	Quantity       atomic.Int64  // Total quantity (scaled)
-	FilledQuantity atomic.Int64  // Filled quantity (scaled)
-	Price          atomic.Int64  // Price (scaled)
-	CreatedAt      atomic.Int64  // Creation timestamp (ms)
-	UpdatedAt      atomic.Int64  // Last update timestamp (ms)
+	Status         atomic.Int64 // Order status
+	Quantity       atomic.Int64 // Total quantity (scaled)
+	FilledQuantity atomic.Int64 // Filled quantity (scaled)
+	Price          atomic.Int64 // Price (scaled)
+	CreatedAt      atomic.Int64 // Creation timestamp (ms)
+	UpdatedAt      atomic.Int64 // Last update timestamp (ms)
 }
 
 // GetStatus returns the current order status.
@@ -223,16 +221,16 @@ func (o *Order) ApplyUpdate(update *OrderUpdate) {
 		}
 	case OrderUpdateTypeAmended:
 		switch update.AmendType {
-		case AmendTypePriceQty:
+		case "price_qty":
 			if update.NewPrice != nil && update.NewQty != nil {
 				o.UpdatePrice(*update.NewPrice)
 				o.UpdateQuantity(*update.NewQty)
 			}
-		case AmendTypePrice:
+		case "price":
 			if update.NewPrice != nil {
 				o.UpdatePrice(*update.NewPrice)
 			}
-		case AmendTypeQty:
+		case "qty":
 			if update.NewQty != nil {
 				o.UpdateQuantity(*update.NewQty)
 			}
@@ -263,29 +261,17 @@ func (o *Order) ApplyUpdate(update *OrderUpdate) {
 
 // OrderUpdate represents an update to an order.
 type OrderUpdate struct {
-	Order           *Order          // Reference to the order being updated
-	Success         bool            // Whether the update was successful
-	UpdateType      OrderUpdateType // Type of update
-	ErrorMessage    *string         // Error message if any
-	RequestID       *string         // Request ID for tracking
-	ExchangeOrderID *string         // Exchange-assigned order ID
-	FillQty         *float64        // Filled quantity for this update
-	FillPrice       *float64        // Fill price for this update
-	UpdatedAt       int64           // Timestamp of update (ms)
-	IsMaker         bool            // Whether the order was a maker
-	AmendType       AmendType       // Type of amendment
-	NewPrice        *float64        // New price if amended
-	NewQty          *float64        // New quantity if amended
-}
-
-// NewOrderUpdate creates a new OrderUpdate instance.
-func NewOrderUpdate(order *Order, updateType OrderUpdateType, success bool, updatedAt int64) *OrderUpdate {
-	requestID := order.ClientOrderID.String()
-	return &OrderUpdate{
-		Order:      order,
-		UpdateType: updateType,
-		Success:    success,
-		RequestID:  &requestID,
-		UpdatedAt:  updatedAt,
-	}
+	Success         bool
+	UpdateType      OrderUpdateType
+	Status          OrderStatus
+	ErrorMessage    *string
+	RequestID       *string
+	ExchangeOrderID *string
+	FillQty         *float64
+	FillPrice       *float64
+	UpdatedAt       int64
+	IsMaker         bool
+	AmendType       string
+	NewPrice        *float64
+	NewQty          *float64
 }

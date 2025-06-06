@@ -6,26 +6,26 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
-	"strconv"
-	"github.com/google/uuid"
-	"strings"
 	zerologlog "github.com/rs/zerolog/log"
 	"github.com/souravmenon1999/trade-engine/framedCopy/config"
 	bybitWS "github.com/souravmenon1999/trade-engine/framedCopy/exchange/net/websockets/bybit"
-	"github.com/souravmenon1999/trade-engine/framedCopy/types"
 	"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
+	"github.com/souravmenon1999/trade-engine/framedCopy/types"
 )
 
 // BybitClient manages WebSocket connections for Bybit exchange
 type BybitClient struct {
-	publicWS  *bybitWS.BybitWSClient
-	tradingWS *bybitWS.BybitWSClient
-	updatesWS *bybitWS.BybitWSClient
-	subs      sync.Map
-	symbol    string
-	tradingHandler exchange.TradingHandler
+	publicWS         *bybitWS.BybitWSClient
+	tradingWS        *bybitWS.BybitWSClient
+	updatesWS        *bybitWS.BybitWSClient
+	subs             sync.Map
+	symbol           string
+	tradingHandler   exchange.TradingHandler
+	executionHandler exchange.ExecutionHandler
 }
 
 func (c *BybitClient) SetTradingHandler(handler exchange.TradingHandler) {
@@ -33,10 +33,13 @@ func (c *BybitClient) SetTradingHandler(handler exchange.TradingHandler) {
 	zerologlog.Info().Msg("Set trading handler for Bybit")
 }
 
-// NewBybitClient creates and initializes a Bybit client, automatically connecting,
-// subscribing to topics, and starting message reading
+func (c *BybitClient) SetExecutionHandler(handler exchange.ExecutionHandler) {
+	c.executionHandler = handler
+	zerologlog.Info().Msg("Set execution handler for Bybit")
+}
+
+// NewBybitClient creates and initializes a Bybit client
 func NewBybitClient(cfg *config.Config) *BybitClient {
-	// Initialize WebSocket clients
 	client := &BybitClient{
 		publicWS:  bybitWS.NewBybitWSClient(cfg.BybitOrderbook.WSUrl, "", "", "public"),
 		tradingWS: bybitWS.NewBybitWSClient(cfg.BybitExchangeClient.TradingWSUrl, cfg.BybitExchangeClient.APIKey, cfg.BybitExchangeClient.APISecret, "trading"),
@@ -46,7 +49,7 @@ func NewBybitClient(cfg *config.Config) *BybitClient {
 	}
 	zerologlog.Info().Msg("BybitClient initialized with WebSocket configurations")
 
-if err := client.Connect(); err != nil {
+	if err := client.Connect(); err != nil {
 		zerologlog.Fatal().Err(err).Msg("Failed to connect to Bybit WebSockets during initialization")
 	}
 
@@ -74,35 +77,24 @@ func (c *BybitClient) Connect() error {
 		return fmt.Errorf("failed to connect updates WS: %w", err)
 	}
 	zerologlog.Info().Msg("Updates Bybit WebSocket connected")
+	if c.executionHandler != nil {
+		c.executionHandler.OnExecutionConnect()
+	}
 	return nil
 }
 
 // SubscribeAll subscribes to predefined topics for all WebSocket clients
-// SubscribeAll subscribes to predefined topics for all WebSocket clients
 func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 	depth := cfg.BybitOrderbook.OrderbookDepth
-    if depth <= 0 {
-        depth = 50 // Default to 50 if not set or invalid
-    }
-	// Public WebSocket: Order book
+	if depth <= 0 {
+		depth = 50
+	}
 	orderBookTopic := fmt.Sprintf("orderbook.%d.%s", depth, cfg.BybitOrderbook.Symbol)
-	if err := c.SubscribePublic(orderBookTopic, func(data []byte) {
-		// zerologlog.Info().Msgf("Received order book update: %s", string(data))
-	}); err != nil {
+	if err := c.SubscribePublic(orderBookTopic, func(data []byte) {}); err != nil {
 		return fmt.Errorf("failed to subscribe to public topic %s: %w", orderBookTopic, err)
 	}
-	zerologlog.Info().Str("topic", orderBookTopic).Msg("Subscribed to public WebSocket topic with logging callback")
-	
-	// tickersTopic := "tickers." + cfg.BybitOrderbook.Symbol
-    // if err := c.SubscribePublic(tickersTopic, func(data []byte) {
-    //     zerologlog.Info().Msgf("Received funding rate update for %s: %s", cfg.BybitOrderbook.Symbol, string(data))
-    // }); err != nil {
-    //     return fmt.Errorf("failed to subscribe to %s: %w", tickersTopic, err)
-    // }
-    // zerologlog.Info().Str("topic", tickersTopic).Msg("Subscribed to funding rate updates")
+	zerologlog.Info().Str("topic", orderBookTopic).Msg("Subscribed to public WebSocket topic")
 
-
-	// Trading WebSocket: Order updates
 	if err := c.SubscribeTrading("order", func(data []byte) {
 		zerologlog.Info().Msgf("Received order update: %s", string(data))
 	}); err != nil {
@@ -110,7 +102,6 @@ func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 	}
 	zerologlog.Info().Str("topic", "order").Msg("Subscribed to trading WebSocket topic")
 
-	// Updates WebSocket: Position updates
 	if err := c.SubscribeUpdates("position", func(data []byte) {
 		zerologlog.Info().Msgf("Received position update: %s", string(data))
 	}); err != nil {
@@ -118,50 +109,42 @@ func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 	}
 	zerologlog.Info().Str("topic", "position").Msg("Subscribed to updates WebSocket topic")
 
+	if err := c.SubscribeUpdates("execution.fast", func(data []byte) {
+		zerologlog.Info().Msgf("Received execution.fast update: %s", string(data))
+	}); err != nil {
+		return fmt.Errorf("failed to subscribe to execution.fast topic: %w", err)
+	}
+	zerologlog.Info().Str("topic", "execution.fast").Msg("Subscribed to execution.fast WebSocket topic")
 
-	 // New subscription: execution.fast
-    if err := c.SubscribeUpdates("execution.fast", func(data []byte) {
-        zerologlog.Info().Msgf("Received execution.fast update: %s", string(data))
-    }); err != nil {
-        return fmt.Errorf("failed to subscribe to execution.fast topic: %w", err)
-    }
-    zerologlog.Info().Str("topic", "execution.fast").Msg("Subscribed to execution.fast WebSocket topic")
-
-
-	// New subscription: Wallet (account margin updates)
-    if err := c.SubscribeUpdates("wallet", func(data []byte) {
-        zerologlog.Info().Msgf("Received account margin update: %s", string(data))
-    }); err != nil {
-        return fmt.Errorf("failed to subscribe to wallet topic: %w", err)
-    }
-    zerologlog.Info().Str("topic", "wallet").Msg("Subscribed to account margin updates")
+	if err := c.SubscribeUpdates("wallet", func(data []byte) {
+		zerologlog.Info().Msgf("Received account margin update: %s", string(data))
+	}); err != nil {
+		return fmt.Errorf("failed to subscribe to wallet topic: %w", err)
+	}
+	zerologlog.Info().Str("topic", "wallet").Msg("Subscribed to account margin updates")
 
 	return nil
 }
 
 func (c *BybitClient) generateSignature(toSign string) string {
-	apiSecret := c.tradingWS.GetApiSecret() // Use the getter method
+	apiSecret := c.tradingWS.GetApiSecret()
 	h := hmac.New(sha256.New, []byte(apiSecret))
 	h.Write([]byte(toSign))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// SubscribePublic subscribes to a public WebSocket topic
 func (c *BybitClient) SubscribePublic(topic string, callback func([]byte)) error {
 	return c.subscribe(c.publicWS, topic, callback)
 }
 
-// SubscribeTrading subscribes to a trading WebSocket topic
 func (c *BybitClient) SubscribeTrading(topic string, callback func([]byte)) error {
 	return c.subscribe(c.tradingWS, topic, callback)
 }
 
-// SubscribeUpdates subscribes to an updates WebSocket topic
 func (c *BybitClient) SubscribeUpdates(topic string, callback func([]byte)) error {
 	return c.subscribe(c.updatesWS, topic, callback)
 }
 
-// subscribe is a helper to subscribe to a topic on a specific WebSocket
 func (c *BybitClient) subscribe(ws *bybitWS.BybitWSClient, topic string, callback func([]byte)) error {
 	if _, loaded := c.subs.LoadOrStore(topic, callback); loaded {
 		return fmt.Errorf("already subscribed to %s", topic)
@@ -174,14 +157,12 @@ func (c *BybitClient) subscribe(ws *bybitWS.BybitWSClient, topic string, callbac
 	return nil
 }
 
-// StartReading launches goroutines to read messages from all WebSocket clients
 func (c *BybitClient) StartReading() {
 	go c.readLoop(c.publicWS, "public")
 	go c.readLoop(c.tradingWS, "trading")
 	go c.readLoop(c.updatesWS, "updates")
 }
 
-// readLoop continuously reads messages from a WebSocket
 func (c *BybitClient) readLoop(ws *bybitWS.BybitWSClient, wsType string) {
 	for {
 		message, err := ws.ReadMessage()
@@ -190,12 +171,18 @@ func (c *BybitClient) readLoop(ws *bybitWS.BybitWSClient, wsType string) {
 			if wsType == "trading" && c.tradingHandler != nil {
 				c.tradingHandler.OnOrderDisconnect()
 			}
+			if wsType == "updates" && c.executionHandler != nil {
+				c.executionHandler.OnExecutionDisconnect()
+			}
 			zerologlog.Info().Str("ws_type", wsType).Msg("Attempting to reconnect...")
 			for i := 0; i < 5; i++ {
 				if err := ws.Connect(); err == nil {
 					zerologlog.Info().Str("ws_type", wsType).Msg("Reconnected successfully")
 					if wsType == "trading" && c.tradingHandler != nil {
 						c.tradingHandler.OnOrderConnect()
+					}
+					if wsType == "updates" && c.executionHandler != nil {
+						c.executionHandler.OnExecutionConnect()
 					}
 					c.subs.Range(func(key, value interface{}) bool {
 						topic := key.(string)
@@ -221,13 +208,15 @@ func (c *BybitClient) readLoop(ws *bybitWS.BybitWSClient, wsType string) {
 	}
 }
 
-// handleMessage processes incoming WebSocket messages
 func (c *BybitClient) handleMessage(message []byte, wsType string) {
 	var msg map[string]interface{}
 	if err := json.Unmarshal(message, &msg); err != nil {
 		zerologlog.Error().Err(err).Str("ws_type", wsType).Str("raw_message", string(message)).Msg("Error unmarshaling message")
 		if wsType == "trading" && c.tradingHandler != nil {
 			c.tradingHandler.OnOrderError(fmt.Sprintf("Error unmarshaling message: %v", err))
+		}
+		if wsType == "updates" && c.executionHandler != nil {
+			c.executionHandler.OnExecutionError(fmt.Sprintf("Error unmarshaling message: %v", err))
 		}
 		return
 	}
@@ -285,11 +274,6 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 				continue
 			}
 
-			minimalOrder := &types.Order{
-				ClientOrderID: uuid.MustParse(clientOrderID),
-				ExchangeID:    types.ExchangeIDBybit,
-			}
-
 			orderID, _ := orderData["orderId"].(string)
 			status, _ := orderData["orderStatus"].(string)
 			price, _ := orderData["price"].(string)
@@ -301,10 +285,7 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 			case "New", "Created":
 				updateType = types.OrderUpdateTypeCreated
 				success = true
-			case "Filled":
-				updateType = types.OrderUpdateTypeFill
-				success = true
-			case "PartiallyFilled":
+			case "Filled", "PartiallyFilled":
 				updateType = types.OrderUpdateTypeFill
 				success = true
 			case "Cancelled":
@@ -328,22 +309,103 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 				zerologlog.Warn().Err(err).Str("price", price).Msg("Invalid price")
 				continue
 			}
-			requestID := clientOrderID
 
-			update := types.NewOrderUpdate(
-				minimalOrder,
-				updateType,
-				success,
-				time.Now().UnixMilli(),
-			)
-			update.ExchangeOrderID = &orderID
-			update.FillQty = &fillQty
-			update.FillPrice = &fillPrice
-			update.RequestID = &requestID
-			update.IsMaker = orderData["isMaker"] == true
+			// Map Bybit status to OrderStatus
+			var orderStatus types.OrderStatus
+			switch status {
+			case "New", "Created":
+				orderStatus = types.OrderStatusOpen
+			case "PartiallyFilled":
+				orderStatus = types.OrderStatusPartiallyFilled
+			case "Filled":
+				orderStatus = types.OrderStatusFilled
+			case "Cancelled":
+				orderStatus = types.OrderStatusCancelled
+			case "Rejected":
+				orderStatus = types.OrderStatusRejected
+			default:
+				orderStatus = types.OrderStatusUnknown
+			}
+
+			update := &types.OrderUpdate{
+				Success:         success,
+				UpdateType:      updateType,
+				Status:          orderStatus,
+				ErrorMessage:    nil,
+				RequestID:       &clientOrderID,
+				ExchangeOrderID: &orderID,
+				FillQty:         &fillQty,
+				FillPrice:       &fillPrice,
+				UpdatedAt:       time.Now().UnixMilli(),
+				IsMaker:         orderData["isMaker"] == true,
+				AmendType:       "",
+				NewPrice:        nil,
+				NewQty:          nil,
+			}
 
 			c.tradingHandler.OnOrderUpdate(update)
 			zerologlog.Debug().Str("clientOrderID", clientOrderID).Str("updateType", string(updateType)).Msg("Dispatched order update")
+		}
+		return
+	}
+
+	if topic == "execution.fast" && c.executionHandler != nil {
+		data, ok := msg["data"].([]interface{})
+		if !ok || len(data) == 0 {
+			zerologlog.Warn().Str("ws_type", wsType).Msg("Invalid execution.fast data")
+			return
+		}
+
+		var updates []*types.OrderUpdate
+		for _, item := range data {
+			execData, ok := item.(map[string]interface{})
+			if !ok {
+				zerologlog.Warn().Str("ws_type", wsType).Msg("Invalid execution data item")
+				continue
+			}
+
+			orderID, _ := execData["orderId"].(string)
+			priceStr, _ := execData["price"].(string)
+			qtyStr, _ := execData["qty"].(string)
+			isMaker, _ := execData["isMaker"].(bool)
+			timestamp, _ := execData["timestamp"].(float64)
+
+			price, err := strconv.ParseFloat(priceStr, 64)
+			if err != nil {
+				zerologlog.Warn().Err(err).Str("price", priceStr).Msg("Invalid price")
+				continue
+			}
+			qty, err := strconv.ParseFloat(qtyStr, 64)
+			if err != nil {
+				zerologlog.Warn().Err(err).Str("qty", qtyStr).Msg("Invalid quantity")
+				continue
+			}
+
+			// For execution updates, clientOrderID might not be available directly
+			var requestID *string // Map orderID to clientOrderID if needed
+
+			update := &types.OrderUpdate{
+				Success:         true,
+				UpdateType:      types.OrderUpdateTypeFill,
+				Status:          types.OrderStatusFilled, // Adjust based on context
+				ErrorMessage:    nil,
+				RequestID:       requestID,
+				ExchangeOrderID: &orderID,
+				FillQty:         &qty,
+				FillPrice:       &price,
+				UpdatedAt:       int64(timestamp),
+				IsMaker:         isMaker,
+				AmendType:       "",
+				NewPrice:        nil,
+				NewQty:          nil,
+			}
+
+			updates = append(updates, update)
+		}
+
+		if len(updates) > 0 {
+			c.executionHandler.OnExecutionUpdate(updates)
+			zerologlog.Debug().Int("count", len(updates)).Msg("Dispatched execution updates")
 		}
 		return
 	}
@@ -355,14 +417,13 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 	}
 }
 
-// SendOrder sends a trading order (unchanged)
 func (c *BybitClient) SendOrder(order *types.Order) (string, error) {
 	clientOrderID := order.ClientOrderID.String()
 	go func() {
 		symbol := order.Instrument.BaseCurrency + order.Instrument.QuoteCurrency
 		side := string(order.Side)
-		price := order.GetPrice() // Unscaled price
-		quantity := order.GetQuantity() // Unscaled quantity
+		price := order.GetPrice()
+		quantity := order.GetQuantity()
 
 		timestamp := time.Now().UnixMilli()
 		recvWindow := 5000
@@ -407,117 +468,103 @@ func (c *BybitClient) SendOrder(order *types.Order) (string, error) {
 	return clientOrderID, nil
 }
 
-// CancelOrder cancels an order asynchronously (fire-and-forget)
 func (c *BybitClient) CancelOrder(orderID string) error {
-    // Launch cancellation in goroutine
-    go func(id string) {
-        // Copy necessary values to avoid closure issues
-        symbol := c.symbol
-        
-        timestamp := time.Now().UnixMilli()
-        recvWindow := 5000
-        toSign := fmt.Sprintf("%d%d", timestamp, recvWindow)
-        signature := c.generateSignature(toSign)
+	go func(id string) {
+		symbol := c.symbol
+		timestamp := time.Now().UnixMilli()
+		recvWindow := 5000
+		signature := c.generateSignature(fmt.Sprintf("%d%d", timestamp, recvWindow))
 
-        cancelMsg := struct {
-            OP     string        `json:"op"`
-            Args   []interface{} `json:"args"`
-            Header map[string]interface{} `json:"header"`
-        }{
-            OP: "order.cancel",
-            Args: []interface{}{
-                map[string]interface{}{
-                    "orderId":  id,
-                    "category": "linear",
-                    "symbol":   symbol,
-                },
-            },
-            Header: map[string]interface{}{
-                "X-BAPI-TIMESTAMP":   timestamp,
-                "X-BAPI-RECV-WINDOW": recvWindow,
-                "X-BAPI-SIGN":        signature,
-                "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
-            },
-        }
+		cancelMsg := struct {
+			OP     string        `json:"op"`
+			Args   []interface{} `json:"args"`
+			Header map[string]interface{} `json:"header"`
+		}{
+			OP: "order.cancel",
+			Args: []interface{}{
+				map[string]interface{}{
+					"orderId":  id,
+					"category": "linear",
+					"symbol":   symbol,
+				},
+			},
+			Header: map[string]interface{}{
+				"X-BAPI-TIMESTAMP":   timestamp,
+				"X-BAPI-RECV-WINDOW": recvWindow,
+				"X-BAPI-SIGN":        signature,
+				"X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
+			},
+		}
 
-        cancelJSON, err := json.Marshal(cancelMsg)
-        if err != nil {
-            zerologlog.Error().Err(err).Msg("Failed to marshal cancel order message")
-            return
-        }
+		cancelJSON, err := json.Marshal(cancelMsg)
+		if err != nil {
+			zerologlog.Error().Err(err).Msg("Failed to marshal cancel order message")
+			return
+		}
 
-        zerologlog.Debug().Str("cancel_message", string(cancelJSON)).Msg("Sending cancel order to Bybit")
-        
-        if err := c.tradingWS.SendJSON(cancelMsg); err != nil {
-            zerologlog.Error().Err(err).Msg("Failed to send cancel order")
-        } else {
-            zerologlog.Info().Str("orderId", id).Str("symbol", symbol).Msg("Cancel order request sent")
-        }
-    }(orderID)  // Pass orderID as parameter
-
-    return nil
+		zerologlog.Debug().Str("cancel_message", string(cancelJSON)).Msg("Sending cancel order to Bybit")
+		if err := c.tradingWS.SendJSON(cancelJSON); err != nil {
+			zerologlog.Error().Err(err).Msg("Failed to send cancel order")
+		} else {
+			zerologlog.Info().Str("orderId", id).Str("symbol", symbol).Msg("Cancel order request sent")
+		}
+	}(orderID)
+	return nil
 }
 
-// AmendOrder amends an order asynchronously (fire-and-forget)
 func (c *BybitClient) AmendOrder(symbol, orderId string, newPrice, newQty int64) error {
-    // Launch amendment in goroutine
-    go func(sym, oid string, np, nq int64) {
-        timestamp := time.Now().UnixMilli()
-        recvWindow := 5000
-        toSign := fmt.Sprintf("%d%d", timestamp, recvWindow)
-        signature := c.generateSignature(toSign)
+	go func(sym, oid string, np, nq int64) {
+		timestamp := time.Now().UnixMilli()
+		recvWindow := 5000
+		signature := c.generateSignature(fmt.Sprintf("%d%d", timestamp, recvWindow))
 
-        type AmendArg struct {
-            OrderID  string `json:"orderId"`
-            Category string `json:"category"`
-            Symbol   string `json:"symbol"`
-            Price    string `json:"price,omitempty"`
-            Qty      string `json:"qty,omitempty"`
-        }
+		type AmendArg struct {
+			OrderID  string `json:"orderId"`
+			Category string `json:"category"`
+			Symbol   string `json:"symbol"`
+			Price    string `json:"price,omitempty"`
+			Qty      string `json:"qty,omitempty"`
+		}
 
-        amendMsg := struct {
-            OP     string        `json:"op"`
-            Args   []AmendArg    `json:"args"`
-            Header map[string]interface{} `json:"header"`
-        }{
-            OP: "order.amend",
-            Args: []AmendArg{
-                {
-                    OrderID:  oid,
-                    Category: "linear",
-                    Symbol:   sym,
-                    Price:    fmt.Sprintf("%d", np),
-                    Qty:      ".01",
-                },
-            },
-            Header: map[string]interface{}{
-                "X-BAPI-TIMESTAMP":   timestamp,
-                "X-BAPI-RECV-WINDOW": recvWindow,
-                "X-BAPI-SIGN":        signature,
-                "X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
-            },
-        }
+		amendMsg := struct {
+			OP     string        `json:"op"`
+			Args   []AmendArg    `json:"args"`
+			Header map[string]interface{} `json:"header"`
+		}{
+			OP: "order.amend",
+			Args: []AmendArg{
+				{
+					OrderID:  oid,
+					Category: "linear",
+					Symbol:   sym,
+					Price:    fmt.Sprintf("%d", np),
+					Qty:      fmt.Sprintf("%d", nq),
+				},
+			},
+			Header: map[string]interface{}{
+				"X-BAPI-TIMESTAMP":   timestamp,
+				"X-BAPI-RECV-WINDOW": recvWindow,
+				"X-BAPI-SIGN":        signature,
+				"X-BAPI-API-KEY":     c.tradingWS.GetApiKey(),
+			},
+		}
 
-        amendJSON, err := json.Marshal(amendMsg)
-        if err != nil {
-            zerologlog.Error().Err(err).Msg("Failed to marshal amend order message")
-            return
-        }
+		amendJSON, err := json.Marshal(amendMsg)
+		if err != nil {
+			zerologlog.Error().Err(err).Msg("Failed to marshal amend order message")
+			return
+		}
 
-        zerologlog.Debug().Str("amend_message", string(amendJSON)).Msg("Sending amend order to Bybit")
-        
-        if err := c.tradingWS.SendJSON(amendMsg); err != nil {
-            zerologlog.Error().Err(err).Msg("Failed to send amend order")
-        } else {
-            zerologlog.Info().Str("orderId", oid).Str("symbol", sym).Int64("newPrice", np).Int64("newQty", nq).Msg("Amend order request sent")
-        }
-    }(symbol, orderId, newPrice, newQty)  // Pass parameters
-
-    return nil
+		zerologlog.Debug().Str("amend_message", string(amendJSON)).Msg("Sending amend order to Bybit")
+		if err := c.tradingWS.SendJSON(amendJSON); err != nil {
+			zerologlog.Error().Err(err).Msg("Failed to send amend order")
+		} else {
+			zerologlog.Info().Str("orderId", oid).Str("symbol", sym).Int64("newPrice", np).Int64("newQty", nq).Msg("Amend order request sent")
+		}
+	}(symbol, orderId, newPrice, newQty)
+	return nil
 }
 
-
-// Close shuts down all WebSocket connections
 func (c *BybitClient) Close() {
 	c.publicWS.Close()
 	c.tradingWS.Close()
@@ -525,7 +572,6 @@ func (c *BybitClient) Close() {
 	zerologlog.Info().Msg("All Bybit WebSockets closed")
 }
 
-// PublicWS returns the public WebSocket client
 func (c *BybitClient) PublicWS() *bybitWS.BybitWSClient {
 	return c.publicWS
 }

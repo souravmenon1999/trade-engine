@@ -46,11 +46,6 @@ func NewArbitrageStrategy(bybitEx exchange.Exchange, injectiveEx exchange.Exchan
 func (s *ArbitrageStrategy) OnOrderUpdate(update *types.OrderUpdate) {
 	log.Info().Interface("update", update).Msg("Received order update")
 
-	if update.Order == nil {
-		log.Error().Msg("Order update missing order reference")
-		return
-	}
-
 	if update.RequestID == nil {
 		log.Error().Msg("Order update missing RequestID")
 		return
@@ -126,8 +121,14 @@ func (s *ArbitrageStrategy) OnOrderConnect() {
 // OnExecutionUpdate processes execution updates
 func (s *ArbitrageStrategy) OnExecutionUpdate(updates []*types.OrderUpdate) {
 	for _, update := range updates {
+		var clientOrderID string
+		if update.RequestID != nil {
+			clientOrderID = *update.RequestID
+		} else {
+			clientOrderID = "unknown"
+		}
 		log.Info().
-			Str("clientOrderID", update.Order.ClientOrderID.String()).
+			Str("clientOrderID", clientOrderID).
 			Float64("fillQty", *update.FillQty).
 			Float64("fillPrice", *update.FillPrice).
 			Msg("Execution update received")
