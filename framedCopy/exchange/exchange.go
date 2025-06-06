@@ -23,3 +23,10 @@ type ExecutionHandler interface {
     OnExecutionError(error string)
     OnExecutionConnect()
 }
+
+type OrderbookHandler interface {
+    OnOrderbook(orderbook *types.OrderBook)
+    OnOrderbookDisconnect()
+    OnOrderbookError(error string)
+    OnOrderbookConnect()
+}

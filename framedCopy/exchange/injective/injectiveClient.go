@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
-
+	"strconv"
 	exchangetypes "github.com/InjectiveLabs/sdk-go/chain/exchange/types"
 	chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
 	"github.com/InjectiveLabs/sdk-go/client/common"
@@ -39,7 +38,7 @@ type InjectiveClient struct {
 	tradingHandler   exchange.TradingHandler
 	executionHandler exchange.ExecutionHandler
 	orderFillTracker map[string]float64 // Tracks cumulative filled quantity per order
-	fillTrackerMutex sync.Mutex         // Ensures thread safety
+	orderbookHandler exchange.OrderbookHandler // New field
 }
 
 // NewInjectiveClient creates and initializes a new Injective client
@@ -142,6 +141,101 @@ func (c *InjectiveClient) SubscribeAll(marketId, subaccountId string) {
 	}); err != nil {
 		log.Printf("Failed to subscribe to funding rates: %v", err)
 	}
+}
+
+func (c *InjectiveClient) SubscribeOrderbook(marketId string) error {
+    stream, err := c.updatesClient.StreamDerivativeOrderbookUpdate(c.ctx, []string{marketId}) // Pass marketId as []string
+    if err != nil {
+        return fmt.Errorf("failed to stream orderbook updates: %w", err)
+    }
+
+    go func() {
+        for {
+            select {
+            case <-c.ctx.Done():
+                if c.orderbookHandler != nil {
+                    c.orderbookHandler.OnOrderbookDisconnect()
+                }
+                return
+            default:
+                res, err := stream.Recv()
+                if err != nil {
+                    if c.orderbookHandler != nil {
+                        c.orderbookHandler.OnOrderbookError(fmt.Sprintf("Stream recv error: %v", err))
+                        c.orderbookHandler.OnOrderbookDisconnect()
+                    }
+                    return
+                }
+                orderbook, err := parseInjectiveOrderbook(res, marketId)
+                if err != nil {
+                    if c.orderbookHandler != nil {
+                        c.orderbookHandler.OnOrderbookError(fmt.Sprintf("Failed to parse orderbook: %v", err))
+                    }
+                    continue
+                }
+                if c.orderbookHandler != nil {
+                    c.orderbookHandler.OnOrderbook(orderbook)
+                }
+            }
+        }
+    }()
+
+    if c.orderbookHandler != nil {
+        c.orderbookHandler.OnOrderbookConnect()
+    }
+    return nil
+}
+
+func parseInjectiveOrderbook(res *derivativeExchangePB.StreamOrderbookUpdateResponse, marketId string) (*types.OrderBook, error) {
+    if res == nil || res.OrderbookLevelUpdates == nil {
+        return nil, fmt.Errorf("nil response or orderbook updates")
+    }
+
+    instrument := &types.Instrument{Symbol: marketId} // Adjust fields as needed
+    exchange := types.ExchangeIDInjective
+    orderbook := types.NewOrderBook(instrument, &exchange)
+
+    // Parse buys (bids)
+    for _, b := range res.OrderbookLevelUpdates.Buys {
+        price, err := strconv.ParseFloat(b.Price, 64)
+        if err != nil {
+            return nil, fmt.Errorf("invalid buy price: %v", err)
+        }
+        quantity, err := strconv.ParseFloat(b.Quantity, 64)
+        if err != nil {
+            return nil, fmt.Errorf("invalid buy quantity: %v", err)
+        }
+        if b.IsActive {
+            update := types.BidUpdate(price, quantity, 1) // Assuming 1 order per level
+            orderbook.ApplyUpdate(update)
+        } else {
+            update := types.BidUpdate(price, 0, 0) // Removal update
+            orderbook.ApplyUpdate(update)
+        }
+    }
+
+    // Parse sells (asks)
+    for _, a := range res.OrderbookLevelUpdates.Sells {
+        price, err := strconv.ParseFloat(a.Price, 64)
+        if err != nil {
+            return nil, fmt.Errorf("invalid sell price: %v", err)
+        }
+        quantity, err := strconv.ParseFloat(a.Quantity, 64)
+        if err != nil {
+            return nil, fmt.Errorf("invalid sell quantity: %v", err)
+        }
+        if a.IsActive {
+            update := types.AskUpdate(price, quantity, 1) // Assuming 1 order per level
+            orderbook.ApplyUpdate(update)
+        } else {
+            update := types.AskUpdate(price, 0, 0) // Removal update
+            orderbook.ApplyUpdate(update)
+        }
+    }
+
+    orderbook.SetLastUpdateTime(res.Timestamp)
+    orderbook.SetSequence(int64(res.OrderbookLevelUpdates.Sequence))
+    return orderbook, nil
 }
 
 // subscribeOrderHistoryWithRetry handles the subscription with retry logic
@@ -295,8 +389,7 @@ func (c *InjectiveClient) parseOrderUpdate(raw *derivativeExchangePB.DerivativeO
 
 // handleExecutionUpdate notifies the execution handler with the OrderUpdate
 func (c *InjectiveClient) handleExecutionUpdate(orderUpdate *types.OrderUpdate) {
-	c.fillTrackerMutex.Lock()
-	defer c.fillTrackerMutex.Unlock()
+	
 
 	if orderUpdate.FillQty != nil && *orderUpdate.FillQty > 0 {
 		c.orderFillTracker[*orderUpdate.ExchangeOrderID] = *orderUpdate.FillQty

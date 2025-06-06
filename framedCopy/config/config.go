@@ -41,6 +41,12 @@ type InjectiveExchangeConfig struct {
 	SubaccountId  string `mapstructure:"subaccount_id"`
 }
 
+type InjectiveOrderbookConfig struct {
+    Symbol        string `mapstructure:"symbol"`
+    BaseCurrency  string `mapstructure:"base_currency"`
+    QuoteCurrency string `mapstructure:"quote_currency"`
+}
+
 func LoadConfig(configPath string) (*Config, error) {
 	viper.SetConfigFile(configPath)
 	if err := viper.ReadInConfig(); err != nil {

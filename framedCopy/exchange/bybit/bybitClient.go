@@ -26,6 +26,7 @@ type BybitClient struct {
 	symbol           string
 	tradingHandler   exchange.TradingHandler
 	executionHandler exchange.ExecutionHandler
+	orderbookHandler exchange.OrderbookHandler 
 }
 
 func (c *BybitClient) SetTradingHandler(handler exchange.TradingHandler) {
@@ -36,6 +37,11 @@ func (c *BybitClient) SetTradingHandler(handler exchange.TradingHandler) {
 func (c *BybitClient) SetExecutionHandler(handler exchange.ExecutionHandler) {
 	c.executionHandler = handler
 	zerologlog.Info().Msg("Set execution handler for Bybit")
+}
+
+func (c *BybitClient) SetOrderbookHandler(handler exchange.OrderbookHandler) {
+    c.orderbookHandler = handler
+    zerologlog.Info().Msg("Set orderbook handler for Bybit")
 }
 
 // NewBybitClient creates and initializes a Bybit client
@@ -86,14 +92,23 @@ func (c *BybitClient) Connect() error {
 // SubscribeAll subscribes to predefined topics for all WebSocket clients
 func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 	depth := cfg.BybitOrderbook.OrderbookDepth
-	if depth <= 0 {
-		depth = 50
-	}
-	orderBookTopic := fmt.Sprintf("orderbook.%d.%s", depth, cfg.BybitOrderbook.Symbol)
-	if err := c.SubscribePublic(orderBookTopic, func(data []byte) {}); err != nil {
-		return fmt.Errorf("failed to subscribe to public topic %s: %w", orderBookTopic, err)
-	}
-	zerologlog.Info().Str("topic", orderBookTopic).Msg("Subscribed to public WebSocket topic")
+    if depth <= 0 {
+        depth = 50
+    }
+    orderBookTopic := fmt.Sprintf("orderbook.%d.%s", depth, cfg.BybitOrderbook.Symbol)
+    if err := c.SubscribePublic(orderBookTopic, func(data []byte) {
+        if c.orderbookHandler != nil {
+            orderbook, err := parseBybitOrderbook(data, cfg.BybitOrderbook.Symbol)
+            if err != nil {
+                c.orderbookHandler.OnOrderbookError(fmt.Sprintf("Failed to parse orderbook: %v", err))
+                return
+            }
+            c.orderbookHandler.OnOrderbook(orderbook)
+        }
+    }); err != nil {
+        return fmt.Errorf("failed to subscribe to public topic %s: %w", orderBookTopic, err)
+    }
+    zerologlog.Info().Str("topic", orderBookTopic).Msg("Subscribed to public WebSocket topic")
 
 	if err := c.SubscribeTrading("order", func(data []byte) {
 		zerologlog.Info().Msgf("Received order update: %s", string(data))
@@ -123,8 +138,66 @@ func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 	}
 	zerologlog.Info().Str("topic", "wallet").Msg("Subscribed to account margin updates")
 
+
+
 	return nil
 }
+
+func parseBybitOrderbook(data []byte, symbol string) (*types.OrderBook, error) {
+    var bybitData struct {
+        Topic string `json:"topic"`
+        Type  string `json:"type"`
+        Data  struct {
+            S   string     `json:"s"`
+            B   [][]string `json:"b"`
+            A   [][]string `json:"a"`
+            U   int64      `json:"u"`
+            Seq int64      `json:"seq"`
+        } `json:"data"`
+        Ts int64 `json:"ts"`
+    }
+    if err := json.Unmarshal(data, &bybitData); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal orderbook data: %w", err)
+    }
+
+    instrument := &types.Instrument{Symbol: symbol}
+    exchange := types.ExchangeIDBybit // Assuming ExchangeIDBybit is defined
+    orderbook := types.NewOrderBook(instrument, &exchange)
+
+    // Parse bids
+    for _, b := range bybitData.Data.B {
+        price, err := strconv.ParseFloat(b[0], 64)
+        if err != nil {
+            return nil, fmt.Errorf("invalid bid price: %v", err)
+        }
+        quantity, err := strconv.ParseFloat(b[1], 64)
+        if err != nil {
+            return nil, fmt.Errorf("invalid bid quantity: %v", err)
+        }
+        update := types.BidUpdate(price, quantity, 1) // Assuming 1 order per level
+        orderbook.ApplyUpdate(update)
+    }
+
+    // Parse asks
+    for _, a := range bybitData.Data.A {
+        price, err := strconv.ParseFloat(a[0], 64)
+        if err != nil {
+            return nil, fmt.Errorf("invalid ask price: %v", err)
+        }
+        quantity, err := strconv.ParseFloat(a[1], 64)
+        if err != nil {
+            return nil, fmt.Errorf("invalid ask quantity: %v", err)
+        }
+        update := types.AskUpdate(price, quantity, 1) // Assuming 1 order per level
+        orderbook.ApplyUpdate(update)
+    }
+
+    orderbook.SetLastUpdateTime(bybitData.Ts)
+    orderbook.SetSequence(bybitData.Data.Seq)
+    return orderbook, nil
+}
+
+
 
 func (c *BybitClient) generateSignature(toSign string) string {
 	apiSecret := c.tradingWS.GetApiSecret()
@@ -207,6 +280,8 @@ func (c *BybitClient) readLoop(ws *bybitWS.BybitWSClient, wsType string) {
 		c.handleMessage(message, wsType)
 	}
 }
+
+
 
 func (c *BybitClient) handleMessage(message []byte, wsType string) {
 	var msg map[string]interface{}
@@ -416,6 +491,8 @@ func (c *BybitClient) handleMessage(message []byte, wsType string) {
 		zerologlog.Warn().Str("ws_type", wsType).Str("topic", topic).Msg("No callback for topic")
 	}
 }
+
+
 
 func (c *BybitClient) SendOrder(order *types.Order) (string, error) {
 	clientOrderID := order.ClientOrderID.String()

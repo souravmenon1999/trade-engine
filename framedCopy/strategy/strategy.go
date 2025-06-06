@@ -150,6 +150,26 @@ func (s *ArbitrageStrategy) OnExecutionError(error string) {
 	log.Error().Str("error", error).Msg("Execution error received")
 }
 
+func (s *ArbitrageStrategy) OnOrderbook(orderbook *types.OrderBook) {
+    log.Info().Str("exchange", string(*orderbook.Exchange)).Msg("Received orderbook update")
+    // Add logic later
+}
+
+func (s *ArbitrageStrategy) OnOrderbookDisconnect() {
+    log.Warn().Msg("Orderbook stream disconnected")
+    // Add logic later
+}
+
+func (s *ArbitrageStrategy) OnOrderbookError(error string) {
+    log.Error().Str("error", error).Msg("Orderbook error received")
+    // Add logic later
+}
+
+func (s *ArbitrageStrategy) OnOrderbookConnect() {
+    log.Info().Msg("Orderbook stream connected")
+    // Add logic later
+}
+
 // SendOrder sends an order to the specified exchange
 func (s *ArbitrageStrategy) SendOrder(order *types.Order) (string, error) {
 	ex, ok := s.Exchanges[order.ExchangeID]
