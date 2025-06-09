@@ -30,3 +30,14 @@ type OrderbookHandler interface {
     OnOrderbookError(error string)
     OnOrderbookConnect()
 }
+
+type AccountHandler interface {
+	OnAccountUpdate(update *types.AccountUpdate)
+	OnPositionUpdate(position *types.Position)
+	OnPositionDisconnect()
+	OnPositionError(error string)
+	OnPositionConnect()
+}
+type PriorityFeeHandler interface {
+	OnPriorityFee(feeInMicroLamport int64)
+}

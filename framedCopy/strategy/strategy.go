@@ -217,7 +217,7 @@ func (s *ArbitrageStrategy) Start() {
 
 	order := &types.Order{
 		ClientOrderID: uuid.New(),
-		ExchangeID:    types.ExchangeIDInjective,
+		ExchangeID:    types.ExchangeIDBybit,
 		Instrument: &types.Instrument{
 			Symbol:        s.Cfg.BybitOrderbook.Symbol,
 			BaseCurrency:  s.Cfg.BybitOrderbook.BaseCurrency,

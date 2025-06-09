@@ -30,15 +30,18 @@ type InjectiveClient struct {
 	senderAddress    string
 	wsClient         *injectivews.InjectiveWSClient
 	clientCtx        client.Context
-	ctx              context.Context
-	cancel           context.CancelFunc
 	marketId         string
 	subaccountId     string
 	latestGasPrice   atomic.Int64
 	tradingHandler   exchange.TradingHandler
 	executionHandler exchange.ExecutionHandler
-	orderFillTracker map[string]float64 // Tracks cumulative filled quantity per order
-	orderbookHandler exchange.OrderbookHandler // New field
+	orderFillTracker map[string]float64
+	orderbookHandler exchange.OrderbookHandler
+	accountHandler   exchange.AccountHandler
+	orderCancel      context.CancelFunc
+	fundingCancel    context.CancelFunc
+	accountCancel    context.CancelFunc
+	bookCancel       context.CancelFunc
 }
 
 // NewInjectiveClient creates and initializes a new Injective client
@@ -82,8 +85,6 @@ func NewInjectiveClient(
 	}
 	log.Println("📊 Orderbook updates client ready")
 
-	ctx, cancel := context.WithCancel(context.Background())
-
 	wsClient := injectivews.NewInjectiveWSClient("wss://sentry.tm.injective.network:443/websocket")
 	if err := wsClient.Connect(); err != nil {
 		log.Printf("Failed to connect to WebSocket: %v", err)
@@ -95,8 +96,6 @@ func NewInjectiveClient(
 		wsClient:         wsClient,
 		senderAddress:    senderAddress.String(),
 		clientCtx:        clientCtx,
-		ctx:              ctx,
-		cancel:           cancel,
 		marketId:         marketId,
 		subaccountId:     subaccountId,
 		latestGasPrice:   atomic.Int64{},
@@ -118,6 +117,10 @@ func NewInjectiveClient(
 
 // handleGasPriceUpdate updates the latest gas price
 func (c *InjectiveClient) handleGasPriceUpdate(gasPrice int64) {
+	if gasPrice <= 0 {
+		log.Printf("Invalid gas price received: %d, skipping update", gasPrice)
+		return
+	}
 	c.latestGasPrice.Store(gasPrice)
 }
 
@@ -133,126 +136,251 @@ func (c *InjectiveClient) SetExecutionHandler(handler exchange.ExecutionHandler)
 	log.Printf("Set execution handler for Injective")
 }
 
-// SubscribeAll subscribes to order history and funding rates
+func (c *InjectiveClient) SetAccountHandler(handler exchange.AccountHandler) {
+	c.accountHandler = handler
+	log.Printf("Set account handler for Injective")
+}
+
+// SubscribeAll subscribes to order history, funding rates, account updates, and orderbook
 func (c *InjectiveClient) SubscribeAll(marketId, subaccountId string) {
-	go c.subscribeOrderHistoryWithRetry(marketId, subaccountId)
+	// Order history subscription
+	orderCtx, orderCancel := context.WithCancel(context.Background())
+	go c.subscribeOrderHistoryWithRetry(marketId, subaccountId, orderCtx)
+	c.orderCancel = orderCancel
+
+	// Funding rates subscription
+	fundingCtx, fundingCancel := context.WithCancel(context.Background())
 	if err := c.SubscribeFundingRates(marketId, func(data []byte) {
 		log.Printf("Funding rate update: %s", string(data))
-	}); err != nil {
+	}, fundingCtx); err != nil {
 		log.Printf("Failed to subscribe to funding rates: %v", err)
+	}
+	c.fundingCancel = fundingCancel
+
+	// Account updates subscription
+	accountCtx, accountCancel := context.WithCancel(context.Background())
+	go func() {
+		if err := c.SubscribeAccountUpdates(subaccountId, accountCtx); err != nil {
+			log.Printf("Failed to subscribe to account updates: %v", err)
+		}
+	}()
+	c.accountCancel = accountCancel
+
+	// Orderbook subscription
+	bookCtx, bookCancel := context.WithCancel(context.Background())
+	go func() {
+		if err := c.SubscribeOrderbook(marketId, bookCtx); err != nil {
+			log.Printf("Failed to subscribe to orderbook: %v", err)
+		}
+	}()
+	c.bookCancel = bookCancel
+}
+
+func (c *InjectiveClient) SubscribeAccountUpdates(subaccountId string, ctx context.Context) error {
+	stream, err := c.updatesClient.StreamSubaccountBalance(ctx, subaccountId)
+	if err != nil {
+		return fmt.Errorf("failed to stream account updates: %w", err)
+	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				if c.accountHandler != nil {
+					c.accountHandler.OnPositionDisconnect()
+				}
+				return
+			default:
+				res, err := stream.Recv()
+				if err != nil {
+					log.Printf("Account updates stream error: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				accountUpdate := parseAccountUpdate(res)
+				if accountUpdate != nil && c.accountHandler != nil {
+					c.accountHandler.OnAccountUpdate(accountUpdate)
+				}
+			}
+		}
+	}()
+
+	if c.accountHandler != nil {
+		c.accountHandler.OnPositionConnect()
+	}
+	return nil
+}
+
+func parseAccountUpdate(res interface{}) *types.AccountUpdate {
+	data, err := json.Marshal(res)
+	if err != nil {
+		log.Printf("Error marshaling response to JSON: %v", err)
+		return nil
+	}
+
+	log.Printf("Received subaccount balance update: %s", string(data))
+
+	type CustomBalanceResponse struct {
+		Balance struct {
+			SubaccountID   string `json:"subaccount_id"`
+			AccountAddress string `json:"account_address"`
+			Denom          string `json:"denom"`
+			Deposit        struct {
+				TotalBalance     string `json:"total_balance"`
+				AvailableBalance string `json:"available_balance"`
+			} `json:"deposit"`
+		} `json:"balance"`
+		Timestamp int64 `json:"timestamp"`
+	}
+
+	var customRes CustomBalanceResponse
+	if err := json.Unmarshal(data, &customRes); err != nil {
+		log.Printf("Error unmarshaling JSON: %v", err)
+		return nil
+	}
+
+	totalBalance, err := decimal.NewFromString(customRes.Balance.Deposit.TotalBalance)
+	if err != nil {
+		log.Printf("Error parsing total balance: %v", err)
+		return nil
+	}
+
+	var availableBalance decimal.Decimal
+	if customRes.Balance.Deposit.AvailableBalance == "" {
+		log.Printf("Warning: Available balance is missing, defaulting to 0")
+		availableBalance = decimal.Zero
+	} else {
+		availableBalance, err = decimal.NewFromString(customRes.Balance.Deposit.AvailableBalance)
+		if err != nil {
+			log.Printf("Error parsing available balance: %v", err)
+			return nil
+		}
+	}
+
+	totalFloat, _ := totalBalance.Float64()
+	availableFloat, _ := availableBalance.Float64()
+	exchangeID := types.ExchangeIDInjective
+
+	log.Printf("Parsed subaccount balance update: Exchange=%s, TotalBalance=%.2f, AvailableBalance=%.2f", exchangeID, totalFloat, availableFloat)
+	return &types.AccountUpdate{
+		Exchange:  &exchangeID,
+		AccountIM: totalFloat,
+		AccountMM: availableFloat,
 	}
 }
 
-func (c *InjectiveClient) SubscribeOrderbook(marketId string) error {
-    stream, err := c.updatesClient.StreamDerivativeOrderbookUpdate(c.ctx, []string{marketId}) // Pass marketId as []string
-    if err != nil {
-        return fmt.Errorf("failed to stream orderbook updates: %w", err)
-    }
+func (c *InjectiveClient) SubscribeOrderbook(marketId string, ctx context.Context) error {
+	stream, err := c.updatesClient.StreamDerivativeOrderbookUpdate(ctx, []string{marketId})
+	if err != nil {
+		return fmt.Errorf("failed to stream orderbook updates: %w", err)
+	}
 
-    go func() {
-        for {
-            select {
-            case <-c.ctx.Done():
-                if c.orderbookHandler != nil {
-                    c.orderbookHandler.OnOrderbookDisconnect()
-                }
-                return
-            default:
-                res, err := stream.Recv()
-                if err != nil {
-                    if c.orderbookHandler != nil {
-                        c.orderbookHandler.OnOrderbookError(fmt.Sprintf("Stream recv error: %v", err))
-                        c.orderbookHandler.OnOrderbookDisconnect()
-                    }
-                    return
-                }
-                orderbook, err := parseInjectiveOrderbook(res, marketId)
-                if err != nil {
-                    if c.orderbookHandler != nil {
-                        c.orderbookHandler.OnOrderbookError(fmt.Sprintf("Failed to parse orderbook: %v", err))
-                    }
-                    continue
-                }
-                if c.orderbookHandler != nil {
-                    c.orderbookHandler.OnOrderbook(orderbook)
-                }
-            }
-        }
-    }()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				if c.orderbookHandler != nil {
+					c.orderbookHandler.OnOrderbookDisconnect()
+				}
+				return
+			default:
+				res, err := stream.Recv()
+				if err != nil {
+					log.Printf("Orderbook stream error: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				orderbook, err := parseInjectiveOrderbook(res, marketId)
+				if err != nil {
+					if c.orderbookHandler != nil {
+						c.orderbookHandler.OnOrderbookError(fmt.Sprintf("Failed to parse orderbook: %v", err))
+					}
+					continue
+				}
+				if c.orderbookHandler != nil {
+					c.orderbookHandler.OnOrderbook(orderbook)
+				}
+			}
+		}
+	}()
 
-    if c.orderbookHandler != nil {
-        c.orderbookHandler.OnOrderbookConnect()
-    }
-    return nil
+	if c.orderbookHandler != nil {
+		c.orderbookHandler.OnOrderbookConnect()
+	}
+	return nil
 }
 
 func parseInjectiveOrderbook(res *derivativeExchangePB.StreamOrderbookUpdateResponse, marketId string) (*types.OrderBook, error) {
-    if res == nil || res.OrderbookLevelUpdates == nil {
-        return nil, fmt.Errorf("nil response or orderbook updates")
-    }
+	if res == nil || res.OrderbookLevelUpdates == nil {
+		return nil, fmt.Errorf("nil response or orderbook updates")
+	}
 
-    instrument := &types.Instrument{Symbol: marketId} // Adjust fields as needed
-    exchange := types.ExchangeIDInjective
-    orderbook := types.NewOrderBook(instrument, &exchange)
+	instrument := &types.Instrument{Symbol: marketId}
+	exchange := types.ExchangeIDInjective
+	orderbook := types.NewOrderBook(instrument, &exchange)
 
-    // Parse buys (bids)
-    for _, b := range res.OrderbookLevelUpdates.Buys {
-        price, err := strconv.ParseFloat(b.Price, 64)
-        if err != nil {
-            return nil, fmt.Errorf("invalid buy price: %v", err)
-        }
-        quantity, err := strconv.ParseFloat(b.Quantity, 64)
-        if err != nil {
-            return nil, fmt.Errorf("invalid buy quantity: %v", err)
-        }
-        if b.IsActive {
-            update := types.BidUpdate(price, quantity, 1) // Assuming 1 order per level
-            orderbook.ApplyUpdate(update)
-        } else {
-            update := types.BidUpdate(price, 0, 0) // Removal update
-            orderbook.ApplyUpdate(update)
-        }
-    }
+	for _, b := range res.OrderbookLevelUpdates.Buys {
+		price, err := strconv.ParseFloat(b.Price, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid buy price: %v", err)
+		}
+		quantity, err := strconv.ParseFloat(b.Quantity, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid buy quantity: %v", err)
+		}
+		if b.IsActive {
+			update := types.BidUpdate(price, quantity, 1)
+			orderbook.ApplyUpdate(update)
+		} else {
+			update := types.BidUpdate(price, 0, 0)
+			orderbook.ApplyUpdate(update)
+		}
+	}
 
-    // Parse sells (asks)
-    for _, a := range res.OrderbookLevelUpdates.Sells {
-        price, err := strconv.ParseFloat(a.Price, 64)
-        if err != nil {
-            return nil, fmt.Errorf("invalid sell price: %v", err)
-        }
-        quantity, err := strconv.ParseFloat(a.Quantity, 64)
-        if err != nil {
-            return nil, fmt.Errorf("invalid sell quantity: %v", err)
-        }
-        if a.IsActive {
-            update := types.AskUpdate(price, quantity, 1) // Assuming 1 order per level
-            orderbook.ApplyUpdate(update)
-        } else {
-            update := types.AskUpdate(price, 0, 0) // Removal update
-            orderbook.ApplyUpdate(update)
-        }
-    }
+	for _, a := range res.OrderbookLevelUpdates.Sells {
+		price, err := strconv.ParseFloat(a.Price, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sell price: %v", err)
+		}
+		quantity, err := strconv.ParseFloat(a.Quantity, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sell quantity: %v", err)
+		}
+		if a.IsActive {
+			update := types.AskUpdate(price, quantity, 1)
+			orderbook.ApplyUpdate(update)
+		} else {
+			update := types.AskUpdate(price, 0, 0)
+			orderbook.ApplyUpdate(update)
+		}
+	}
 
-    orderbook.SetLastUpdateTime(res.Timestamp)
-    orderbook.SetSequence(int64(res.OrderbookLevelUpdates.Sequence))
-    return orderbook, nil
+	orderbook.SetLastUpdateTime(res.Timestamp)
+	orderbook.SetSequence(int64(res.OrderbookLevelUpdates.Sequence))
+	return orderbook, nil
 }
 
-// subscribeOrderHistoryWithRetry handles the subscription with retry logic
-func (c *InjectiveClient) subscribeOrderHistoryWithRetry(marketId, subaccountId string) {
+func (c *InjectiveClient) subscribeOrderHistoryWithRetry(marketId, subaccountId string, ctx context.Context) {
+	attempts := 0
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
-			if err := c.SubscribeOrderHistory(marketId, subaccountId); err != nil {
+			if err := c.SubscribeOrderHistory(marketId, subaccountId, ctx); err != nil {
 				if c.tradingHandler != nil {
 					c.tradingHandler.OnOrderError(fmt.Sprintf("Failed to subscribe to order history: %v", err))
 				}
 				if c.executionHandler != nil {
 					c.executionHandler.OnExecutionError(fmt.Sprintf("Failed to subscribe to order history: %v", err))
 				}
-				time.Sleep(5 * time.Second)
+				attempts++
+				delay := time.Duration(5*attempts) * time.Second
+				if delay > 30*time.Second {
+					delay = 30 * time.Second
+				}
+				log.Printf("Retrying order history subscription after %v due to error: %v", delay, err)
+				time.Sleep(delay)
 				continue
 			}
 			return
@@ -260,8 +388,7 @@ func (c *InjectiveClient) subscribeOrderHistoryWithRetry(marketId, subaccountId 
 	}
 }
 
-// SubscribeOrderHistory subscribes to order history updates
-func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string) error {
+func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string, ctx context.Context) error {
 	log.Printf("Starting order history for Market: %s, Subaccount: %s", marketId, subaccountId)
 
 	req := &derivativeExchangePB.StreamOrdersHistoryRequest{
@@ -269,7 +396,7 @@ func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string) e
 		SubaccountId: subaccountId,
 	}
 
-	stream, err := c.updatesClient.StreamHistoricalDerivativeOrders(c.ctx, req)
+	stream, err := c.updatesClient.StreamHistoricalDerivativeOrders(ctx, req)
 	if err != nil {
 		return fmt.Errorf("failed to stream orders: %w", err)
 	}
@@ -283,7 +410,7 @@ func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string) e
 
 	for {
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			if c.tradingHandler != nil {
 				c.tradingHandler.OnOrderDisconnect()
 			}
@@ -294,7 +421,9 @@ func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string) e
 		default:
 			res, err := stream.Recv()
 			if err != nil {
-				return fmt.Errorf("stream recv error: %w", err)
+				log.Printf("Order history stream error: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
 			}
 			log.Printf("RAW %v", res)
 			if res.Order != nil {
@@ -304,7 +433,6 @@ func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string) e
 	}
 }
 
-// handleOrderUpdate processes order updates for trading and execution handlers
 func (c *InjectiveClient) handleOrderUpdate(raw *derivativeExchangePB.DerivativeOrderHistory, timestamp int64, operationType string) {
 	orderUpdate := c.parseOrderUpdate(raw, timestamp, operationType)
 	if orderUpdate == nil {
@@ -318,7 +446,6 @@ func (c *InjectiveClient) handleOrderUpdate(raw *derivativeExchangePB.Derivative
 	}
 }
 
-// parseOrderUpdate converts raw order data to an OrderUpdate type
 func (c *InjectiveClient) parseOrderUpdate(raw *derivativeExchangePB.DerivativeOrderHistory, timestamp int64, operationType string) *types.OrderUpdate {
 	var updateType types.OrderUpdateType
 	switch operationType {
@@ -387,19 +514,15 @@ func (c *InjectiveClient) parseOrderUpdate(raw *derivativeExchangePB.DerivativeO
 	return update
 }
 
-// handleExecutionUpdate notifies the execution handler with the OrderUpdate
 func (c *InjectiveClient) handleExecutionUpdate(orderUpdate *types.OrderUpdate) {
-	
-
 	if orderUpdate.FillQty != nil && *orderUpdate.FillQty > 0 {
 		c.orderFillTracker[*orderUpdate.ExchangeOrderID] = *orderUpdate.FillQty
 		c.executionHandler.OnExecutionUpdate([]*types.OrderUpdate{orderUpdate})
 	}
 }
 
-// SubscribeFundingRates subscribes to funding rate updates
-func (c *InjectiveClient) SubscribeFundingRates(marketId string, callback func([]byte)) error {
-	stream, err := c.updatesClient.StreamDerivativeMarket(c.ctx, []string{marketId})
+func (c *InjectiveClient) SubscribeFundingRates(marketId string, callback func([]byte), ctx context.Context) error {
+	stream, err := c.updatesClient.StreamDerivativeMarket(ctx, []string{marketId})
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to derivative market stream: %w", err)
 	}
@@ -407,13 +530,14 @@ func (c *InjectiveClient) SubscribeFundingRates(marketId string, callback func([
 	go func() {
 		for {
 			select {
-			case <-c.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
 				res, err := stream.Recv()
 				if err != nil {
-					log.Printf("Error receiving market update: %v", err)
-					return
+					log.Printf("Funding rates stream error: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
 				}
 				fundingData := struct {
 					PerpetualMarketInfo    interface{} `json:"perpetual_market_info"`
@@ -436,15 +560,17 @@ func (c *InjectiveClient) SubscribeFundingRates(marketId string, callback func([
 	return nil
 }
 
-// SendOrder creates and sends a derivative order
 func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
 	clientOrderID := order.ClientOrderID.String()
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
 		price := decimal.NewFromFloat(order.GetPrice())
 		quantity := decimal.NewFromFloat(order.GetQuantity())
 		leverage := decimal.NewFromInt(1)
 
-		marketsAssistant, err := chainclient.NewMarketsAssistant(c.ctx, c.tradeClient)
+		marketsAssistant, err := chainclient.NewMarketsAssistant(ctx, c.tradeClient)
 		if err != nil {
 			log.Printf("SendOrder failed (markets assistant): %v", err)
 			return
@@ -499,13 +625,15 @@ func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
 	return clientOrderID, nil
 }
 
-// CancelOrder cancels an existing derivative order
 func (c *InjectiveClient) CancelOrder(orderHash string) error {
 	if orderHash == "" {
 		return fmt.Errorf("orderHash cannot be empty")
 	}
 
 	go func(hash string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+log.Println(ctx)
 		log.Println("📝 Starting ASYNC order cancellation")
 
 		hash = strings.ToLower(hash)
@@ -561,9 +689,19 @@ func (c *InjectiveClient) CancelOrder(orderHash string) error {
 	return nil
 }
 
-// Shutdown gracefully shuts down the client
 func (c *InjectiveClient) Close() {
-	c.cancel()
+	if c.orderCancel != nil {
+		c.orderCancel()
+	}
+	if c.fundingCancel != nil {
+		c.fundingCancel()
+	}
+	if c.accountCancel != nil {
+		c.accountCancel()
+	}
+	if c.bookCancel != nil {
+		c.bookCancel()
+	}
 	if c.wsClient != nil {
 		c.wsClient.Close()
 	}

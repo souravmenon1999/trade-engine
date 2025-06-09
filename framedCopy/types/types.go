@@ -87,3 +87,21 @@ const (
 )
 
 
+type AccountUpdate struct {
+    Exchange   *ExchangeID // Pointer to exchange details
+    AccountIM  float64   // Initial Margin (total balance or similar)
+    AccountMM  float64   // Maintenance Margin (available balance or similar)
+    // Add other fields like timestamp, equity, etc., as needed
+}
+
+// Position represents a trading position
+type Position struct {
+    Exchange      *ExchangeID  // Pointer to exchange details
+    Instrument    *Instrument // The trading pair/symbol
+    Side          Side       // "Buy" or "Sell"
+    Quantity      float64    // Position size
+    EntryPrice    float64    // Average entry price
+    UnrealizedPnL float64    // Unrealized profit/loss
+    // Add other fields like leverage, liquidation price, etc., as needed
+}
+
