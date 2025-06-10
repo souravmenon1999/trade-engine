@@ -17,13 +17,22 @@ const (
 
 
 
+
+
+type ContractType string
+
+const (
+    ContractTypePerpetual ContractType = "Perpetual"
+   
+)
+
 // Instrument represents a trading instrument.
 type Instrument struct {
-	Symbol        string
-	BaseCurrency  string
-	QuoteCurrency string
-	MinLotSize    *Quantity
-	ContractType  string
+    Symbol        string
+    BaseCurrency  string
+    QuoteCurrency string
+    MinLotSize    *Quantity
+    ContractType  ContractType 
 }
 
 
@@ -88,10 +97,10 @@ const (
 
 
 type AccountUpdate struct {
-    Exchange   *ExchangeID // Pointer to exchange details
-    AccountIM  float64   // Initial Margin (total balance or similar)
-    AccountMM  float64   // Maintenance Margin (available balance or similar)
-    // Add other fields like timestamp, equity, etc., as needed
+    Exchange   *ExchangeID 
+    AccountIM  float64  
+    AccountMM  float64   
+    
 }
 
 // Position represents a trading position
@@ -102,6 +111,16 @@ type Position struct {
     Quantity      float64    // Position size
     EntryPrice    float64    // Average entry price
     UnrealizedPnL float64    // Unrealized profit/loss
-    // Add other fields like leverage, liquidation price, etc., as needed
+    
 }
 
+// NewPerpetualInstrument creates a new instrument for perpetual contracts with a configurable min lot size.
+func NewPerpetualInstrument(symbol, baseCurrency, quoteCurrency string, minLotSize float64) *Instrument {
+    return &Instrument{
+        Symbol:        symbol,
+        BaseCurrency:  baseCurrency,
+        QuoteCurrency: quoteCurrency,
+        MinLotSize:    NewQuantity(minLotSize),
+        ContractType:  ContractTypePerpetual,
+    }
+}

@@ -215,28 +215,21 @@ func (s *ArbitrageStrategy) Start() {
 	symbol := s.Cfg.BybitOrderbook.Symbol
 	log.Info().Str("symbol", symbol).Msg("Using symbol from config")
 
-	order := &types.Order{
-		ClientOrderID: uuid.New(),
-		ExchangeID:    types.ExchangeIDBybit,
-		Instrument: &types.Instrument{
-			Symbol:        s.Cfg.BybitOrderbook.Symbol,
-			BaseCurrency:  s.Cfg.BybitOrderbook.BaseCurrency,
-			QuoteCurrency: s.Cfg.BybitOrderbook.QuoteCurrency,
-			MinLotSize:    types.NewQuantity(0.01),
-			ContractType:  "Perpetual",
-		},
-		Side:        types.SideBuy,
-		OrderType:   types.OrderTypeLimit,
-		TimeInForce: types.TimeInForceGTC,
-		Price:       atomic.Int64{},
-		Quantity:    atomic.Int64{},
-		CreatedAt:   atomic.Int64{},
-		UpdatedAt:   atomic.Int64{},
-	}
-	order.Price.Store(2000 * types.SCALE_FACTOR_F64)
-	order.CreatedAt.Store(time.Now().UnixMilli())
-	order.UpdatedAt.Store(time.Now().UnixMilli())
-	order.Quantity.Store(int64(0.01 * types.SCALE_FACTOR_F64))
+	 // Create instrument with configurable MinLotSize from config
+    instrument := types.NewPerpetualInstrument(
+        s.Cfg.BybitOrderbook.Symbol,
+        s.Cfg.BybitOrderbook.BaseCurrency,
+        s.Cfg.BybitOrderbook.QuoteCurrency,
+        s.Cfg.BybitOrderbook.MinLotSize,
+    )
+	// Use MinLotSize as quantity for the order, or adjust as needed
+    order := types.NewLimitOrder(
+        instrument,
+        types.SideBuy,
+        types.ExchangeIDBybit,
+        2000.0,                  // Price
+        s.Cfg.BybitOrderbook.MinLotSize, // Quantity from config
+    )
 
 	clientOrderID, err := s.SendOrder(order)
 	if err != nil {

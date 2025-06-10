@@ -1,6 +1,9 @@
 package exchange
 
-import "github.com/souravmenon1999/trade-engine/framedCopy/types"
+import (
+    "sync"
+    "github.com/souravmenon1999/trade-engine/framedCopy/types")
+
 
 type Exchange interface {
     SendOrder(order *types.Order) (string, error)
@@ -40,4 +43,23 @@ type AccountHandler interface {
 }
 type PriorityFeeHandler interface {
 	OnPriorityFee(feeInMicroLamport int64)
+}
+
+
+type OrderStore struct {
+    Orders sync.Map // Replaced map[string]*types.Order with sync.Map
+}
+
+var GlobalOrderStore = &OrderStore{}
+
+func (s *OrderStore) StoreOrder(order *types.Order) {
+    s.Orders.Store(order.ClientOrderID, order) // Using sync.Map Store
+}
+
+func (s *OrderStore) GetOrder(clientOrderID string) (*types.Order, bool) {
+    order, ok := s.Orders.Load(clientOrderID) // Using sync.Map Load
+    if !ok {
+        return nil, false
+    }
+    return order.(*types.Order), true // Type assertion to *types.Order
 }

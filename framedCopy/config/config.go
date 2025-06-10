@@ -20,6 +20,8 @@ type BybitOrderbookConfig struct {
 	BaseCurrency  string `mapstructure:"base_currency"`
 	QuoteCurrency string `mapstructure:"quote_currency"`
 	OrderbookDepth int    `mapstructure:"orderbook_depth"`
+	MinLotSize    float64 `mapstructure:"min_lot_size"` 
+
 }
 
 type BybitExchangeClientConfig struct {

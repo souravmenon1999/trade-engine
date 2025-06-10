@@ -495,6 +495,8 @@ func (c *InjectiveClient) parseOrderUpdate(raw *derivativeExchangePB.DerivativeO
 	}
 	price, _ := priceDec.Float64()
 
+	
+
 	update := &types.OrderUpdate{
 		Success:         true,
 		UpdateType:      updateType,

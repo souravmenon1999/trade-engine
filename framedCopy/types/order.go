@@ -25,6 +25,27 @@ type Order struct {
 	UpdatedAt      atomic.Int64 // Last update timestamp (ms)
 }
 
+
+
+// OrderUpdate represents an update to an order.
+type OrderUpdate struct {
+	Success         bool
+	UpdateType      OrderUpdateType
+	Status          OrderStatus
+	ErrorMessage    *string
+	RequestID       *string
+	ExchangeOrderID *string
+	FillQty         *float64
+	FillPrice       *float64
+	UpdatedAt       int64
+	IsMaker         bool
+	AmendType       AmendType
+	NewPrice        *float64
+	NewQty          *float64
+}
+
+
+
 // GetStatus returns the current order status.
 func (o *Order) GetStatus() OrderStatus {
 	return OrderStatus(o.Status.Load())
@@ -96,16 +117,16 @@ func (o *Order) ApplyUpdate(update *OrderUpdate) {
 		}
 	case OrderUpdateTypeAmended:
 		switch update.AmendType {
-		case "price_qty":
+		case AmendTypePriceQty:
 			if update.NewPrice != nil && update.NewQty != nil {
 				o.UpdatePrice(*update.NewPrice)
 				o.UpdateQuantity(*update.NewQty)
 			}
-		case "price":
+		case AmendTypePrice:
 			if update.NewPrice != nil {
 				o.UpdatePrice(*update.NewPrice)
 			}
-		case "qty":
+		case AmendTypeQty:
 			if update.NewQty != nil {
 				o.UpdateQuantity(*update.NewQty)
 			}
@@ -134,19 +155,47 @@ func (o *Order) ApplyUpdate(update *OrderUpdate) {
 	}
 }
 
-// OrderUpdate represents an update to an order.
-type OrderUpdate struct {
-	Success         bool
-	UpdateType      OrderUpdateType
-	Status          OrderStatus
-	ErrorMessage    *string
-	RequestID       *string
-	ExchangeOrderID *string
-	FillQty         *float64
-	FillPrice       *float64
-	UpdatedAt       int64
-	IsMaker         bool
-	AmendType       string
-	NewPrice        *float64
-	NewQty          *float64
+
+
+// NewLimitOrder creates a new limit order with the given parameters.
+func NewLimitOrder(instrument *Instrument, side Side, exchangeID ExchangeID, price float64, quantity float64) *Order {
+    order := &Order{
+        ClientOrderID: uuid.New(),
+        Instrument:    instrument,
+        Side:          side,
+        OrderType:     OrderTypeLimit,
+        ExchangeID:    exchangeID,
+        TimeInForce:   TimeInForceGTC,
+        Price:         atomic.Int64{},
+        Quantity:      atomic.Int64{},
+        CreatedAt:     atomic.Int64{},
+        UpdatedAt:     atomic.Int64{},
+    }
+    order.Price.Store(int64(price * SCALE_FACTOR_F64))
+    order.Quantity.Store(int64(quantity * SCALE_FACTOR_F64))
+    now := time.Now().UnixMilli()
+    order.CreatedAt.Store(now)
+    order.UpdatedAt.Store(now)
+    return order
+}
+
+// NewMarketOrder creates a new market order with the given parameters.
+func NewMarketOrder(instrument *Instrument, side Side, exchangeID ExchangeID, quantity float64) *Order {
+    order := &Order{
+        ClientOrderID: uuid.New(),
+        Instrument:    instrument,
+        Side:          side,
+        OrderType:     OrderTypeMarket,
+        ExchangeID:    exchangeID,
+        TimeInForce:   TimeInForceIOC,
+        Price:         atomic.Int64{}, // Price is not applicable
+        Quantity:      atomic.Int64{},
+        CreatedAt:     atomic.Int64{},
+        UpdatedAt:     atomic.Int64{},
+    }
+    order.Quantity.Store(int64(quantity * SCALE_FACTOR_F64))
+    now := time.Now().UnixMilli()
+    order.CreatedAt.Store(now)
+    order.UpdatedAt.Store(now)
+    return order
 }
