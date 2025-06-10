@@ -19,10 +19,8 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/shopspring/decimal"
 	"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
-	"github.com/souravmenon1999/trade-engine/framedCopy/new" // Use common WebSocket client
+	"github.com/souravmenon1999/trade-engine/framedCopy/exchange/net/websockets/injective"
 	"github.com/souravmenon1999/trade-engine/framedCopy/types"
-	logs "github.com/rs/zerolog/log"
-
 )
 
 // InjectiveClient manages connections and subscriptions for Injective Protocol
@@ -30,7 +28,7 @@ type InjectiveClient struct {
 	tradeClient      chainclient.ChainClient
 	updatesClient    exchangeclient.ExchangeClient
 	senderAddress    string
-	wsClient         *baseWS.BaseWSClient
+	wsClient         *injectivews.InjectiveWSClient
 	clientCtx        client.Context
 	marketId         string
 	subaccountId     string
@@ -87,13 +85,16 @@ func NewInjectiveClient(
 	}
 	log.Println("📊 Orderbook updates client ready")
 
-	// Use BaseWSClient instead of InjectiveWSClient
-	// wsClient := baseWS.NewBaseWSClient("wss://sentry.tm.injective.network:443/websocket", "", "") // No API key/secret for public stream
+	wsClient := injectivews.NewInjectiveWSClient("wss://sentry.tm.injective.network:443/websocket")
+	if err := wsClient.Connect(); err != nil {
+		log.Printf("Failed to connect to WebSocket: %v", err)
+	}
 
 	client := &InjectiveClient{
 		tradeClient:      tradeClient,
 		updatesClient:    updatesClient,
-		wsClient:          baseWS.NewBaseWSClient("wss://sentry.tm.injective.network:443/websocket", "", ""),		senderAddress:    senderAddress.String(),
+		wsClient:         wsClient,
+		senderAddress:    senderAddress.String(),
 		clientCtx:        clientCtx,
 		marketId:         marketId,
 		subaccountId:     subaccountId,
@@ -101,18 +102,12 @@ func NewInjectiveClient(
 		orderFillTracker: make(map[string]float64),
 	}
 
-	// Register gas price handler
-gasHandler := NewGasPriceHandler(func(gasPrice int64) {
-        client.latestGasPrice.Store(gasPrice)
-        logs.Info().Int64("gasPrice", gasPrice).Msg("Updated gas price")
-    })
-    client.wsClient.SetDefaultHandler(gasHandler)
-
-    // Connect to the WebSocket
-    if err := client.wsClient.Connect(); err != nil {
-        log.Printf("Failed to connect to WebSocket: %v", err)
-        return nil, err
-    }
+	if client.wsClient != nil {
+		err = client.wsClient.SubscribeTxs(client.handleGasPriceUpdate)
+		if err != nil {
+			log.Printf("Failed to subscribe to gas prices: %v", err)
+		}
+	}
 
 	log.Printf("🚀 Injective client fully initialized (Sender: %s)", senderAddress.String())
 
@@ -179,20 +174,6 @@ func (c *InjectiveClient) SubscribeAll(marketId, subaccountId string) {
 		}
 	}()
 	c.bookCancel = bookCancel
-
-	// Subscribe to transaction events via WebSocket
-	subMsg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "subscribe",
-		"id":      1,
-		"params": map[string]interface{}{
-			"query": "tm.event='Tx'",
-		},
-	}
-	if err := c.wsClient.Subscribe(subMsg); err != nil {
-		log.Printf("Failed to subscribe to transaction events: %v", err)
-	}
-	c.wsClient.Start()
 }
 
 func (c *InjectiveClient) SubscribeAccountUpdates(subaccountId string, ctx context.Context) error {
@@ -514,6 +495,8 @@ func (c *InjectiveClient) parseOrderUpdate(raw *derivativeExchangePB.DerivativeO
 	}
 	price, _ := priceDec.Float64()
 
+	
+
 	update := &types.OrderUpdate{
 		Success:         true,
 		UpdateType:      updateType,
@@ -652,7 +635,7 @@ func (c *InjectiveClient) CancelOrder(orderHash string) error {
 	go func(hash string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		log.Println(ctx)
+log.Println(ctx)
 		log.Println("📝 Starting ASYNC order cancellation")
 
 		hash = strings.ToLower(hash)
@@ -724,5 +707,5 @@ func (c *InjectiveClient) Close() {
 	if c.wsClient != nil {
 		c.wsClient.Close()
 	}
-	log.Println("🛑 Injective client shut down at 08:00AM INF")
+	log.Println("🛑 Injective client shut down")
 }

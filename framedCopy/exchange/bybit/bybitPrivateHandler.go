@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"github.com/rs/zerolog/log"
 
 	exchange"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
 	"github.com/souravmenon1999/trade-engine/framedCopy/types"
@@ -52,6 +53,7 @@ func (h *BybitPrivateHandler) Handle(message []byte) error {
 			return err
 		}
 		h.accountHandler.OnAccountUpdate(walletUpdate)
+		log.Info().Str("topic", "wallet").Msg("7:26AM INF Wallet update processed successfully")
 	default:
 		return fmt.Errorf("unknown topic: %s", msg.Topic)
 	}

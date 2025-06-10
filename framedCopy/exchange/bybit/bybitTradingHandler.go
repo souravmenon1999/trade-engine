@@ -7,6 +7,9 @@ import (
 	"time"
 	exchange"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
 	"github.com/souravmenon1999/trade-engine/framedCopy/types"
+	"github.com/rs/zerolog/log"
+
+
 )
 
 type BybitTradingHandler struct {
@@ -95,5 +98,7 @@ func (h *BybitTradingHandler) Handle(message []byte) error {
 
 		h.tradingHandler.OnOrderUpdate(update)
 	}
+
+	log.Info().Str("topic", "order").Msg("7:26AM INF Trading update processed successfully")
 	return nil
 }

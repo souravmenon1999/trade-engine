@@ -1,15 +1,15 @@
-package websocket
+package baseWS
 
 import (
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
-	"github.com/rs/zerolog/log"
+	"github.com/gorilla/websocket" // Import for WebSocket functionality
+	"github.com/rs/zerolog/log"    // Import for logging (optional, adjust if you use a different logger)
 )
 
+// WSClient interface defines the methods required for WebSocket clients
 type WSClient interface {
 	Connect() error
 	Subscribe(subMsg interface{}) error
@@ -21,26 +21,34 @@ type WSClient interface {
 	SetDefaultHandler(handler MessageHandler)
 }
 
+// MessageHandler interface for handling WebSocket messages
 type MessageHandler interface {
 	Handle(message []byte) error
 }
 
+// BaseWSClient struct is the base WebSocket client implementation
 type BaseWSClient struct {
-	conn           *websocket.Conn
-	url            string
-	handlers       map[string]MessageHandler
-	defaultHandler MessageHandler
-	mu             sync.Mutex
-	wg             sync.WaitGroup
+	conn           *websocket.Conn   // WebSocket connection
+	url            string            // WebSocket server URL
+	apiKey         string            // API key for authentication
+	apiSecret      string            // API secret for authentication
+	handlers       map[string]MessageHandler // Message handlers by topic
+	defaultHandler MessageHandler    // Default handler for unhandled messages
+	mu             sync.Mutex        // Mutex for thread safety
+	wg             sync.WaitGroup    // WaitGroup for goroutine synchronization
 }
 
-func NewBaseWSClient(url string) *BaseWSClient {
+// NewBaseWSClient creates a new instance of BaseWSClient
+func NewBaseWSClient(url, apiKey, apiSecret string) *BaseWSClient {
 	return &BaseWSClient{
-		url:      url,
-		handlers: make(map[string]MessageHandler),
+		url:       url,
+		apiKey:    apiKey,
+		apiSecret: apiSecret,
+		handlers:  make(map[string]MessageHandler),
 	}
 }
 
+// Connect establishes a connection to the WebSocket server
 func (c *BaseWSClient) Connect() error {
 	dialer := websocket.DefaultDialer
 	conn, _, err := dialer.Dial(c.url, nil)
@@ -53,10 +61,12 @@ func (c *BaseWSClient) Connect() error {
 	return nil
 }
 
+// Subscribe sends a subscription message
 func (c *BaseWSClient) Subscribe(subMsg interface{}) error {
 	return c.SendMessage(subMsg)
 }
 
+// SendMessage sends a message over the WebSocket connection
 func (c *BaseWSClient) SendMessage(msg interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -71,6 +81,7 @@ func (c *BaseWSClient) SendMessage(msg interface{}) error {
 	return nil
 }
 
+// HandleMessage processes incoming WebSocket messages
 func (c *BaseWSClient) HandleMessage(message []byte) error {
 	var msg map[string]interface{}
 	if err := json.Unmarshal(message, &msg); err != nil {
@@ -89,6 +100,7 @@ func (c *BaseWSClient) HandleMessage(message []byte) error {
 	return fmt.Errorf("no handler for message: %s", string(message))
 }
 
+// Close terminates the WebSocket connection
 func (c *BaseWSClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -102,6 +114,7 @@ func (c *BaseWSClient) Close() error {
 	return nil
 }
 
+// Start begins listening for WebSocket messages
 func (c *BaseWSClient) Start() {
 	c.wg.Add(1)
 	go func() {
@@ -123,6 +136,7 @@ func (c *BaseWSClient) Start() {
 	}()
 }
 
+// reconnect attempts to reconnect to the WebSocket server
 func (c *BaseWSClient) reconnect() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -130,7 +144,8 @@ func (c *BaseWSClient) reconnect() {
 		c.conn.Close()
 	}
 	for i := 0; i < 5; i++ {
-		if err := c.Connect(); err == nil {
+		err := c.Connect()
+		if err == nil {
 			log.Info().Str("url", c.url).Msg("Reconnected successfully")
 			return
 		}
@@ -139,14 +154,31 @@ func (c *BaseWSClient) reconnect() {
 	}
 }
 
+// RegisterHandler associates a handler with a topic
 func (c *BaseWSClient) RegisterHandler(topic string, handler MessageHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.handlers[topic] = handler
 }
 
+// SetDefaultHandler sets the default message handler
 func (c *BaseWSClient) SetDefaultHandler(handler MessageHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.defaultHandler = handler
+}
+
+// GetApiKey returns the API key
+func (c *BaseWSClient) GetApiKey() string {
+	return c.apiKey
+}
+
+// GetApiSecret returns the API secret
+func (c *BaseWSClient) GetApiSecret() string {
+	return c.apiSecret
+}
+
+// SendJSON sends a JSON message over the WebSocket connection
+func (c *BaseWSClient) SendJSON(v interface{}) error {
+	return c.SendMessage(v) // Reuses SendMessage for consistency
 }

@@ -31,6 +31,7 @@ func (h *BybitMDHandler) Handle(message []byte) error {
 	if h.orderbookHandler != nil {
 		h.orderbookHandler.OnOrderbook(orderbook)
 	}
+	// log.Info().Str("symbol", h.symbol).Msg("7:26AM INF Orderbook update processed successfully")
 	return nil
 }
 
@@ -81,7 +82,7 @@ func parseBybitOrderbook(data []byte, symbol string) (*types.OrderBook, error) {
 		update := types.AskUpdate(price, quantity, 1)
 		orderbook.ApplyUpdate(update)
 	}
-
+	
 	orderbook.SetLastUpdateTime(resp.Ts)
 	orderbook.SetSequence(resp.Data.Seq)
 	return orderbook, nil
