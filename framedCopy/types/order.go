@@ -29,6 +29,7 @@ type Order struct {
 
 // OrderUpdate represents an update to an order.
 type OrderUpdate struct {
+	Order           *Order
 	Success         bool
 	UpdateType      OrderUpdateType
 	Status          OrderStatus

@@ -457,6 +457,15 @@ func (c *InjectiveClient) handleOrderUpdate(raw *derivativeExchangePB.Derivative
 	if orderUpdate == nil {
 		return
 	}
+	  // Fetch the original order using RequestID (clientOrderID)
+    if orderUpdate.RequestID != nil {
+        originalOrder, ok := exchange.GlobalOrderStore.GetOrder(*orderUpdate.RequestID)
+        if ok {
+            orderUpdate.Order = originalOrder
+        } else {
+            logs.Warn().Str("clientOrderID", *orderUpdate.RequestID).Msg("No order found for update")
+        }
+    }
 	if c.tradingHandler != nil {
 		c.tradingHandler.OnOrderUpdate(orderUpdate)
 	}
