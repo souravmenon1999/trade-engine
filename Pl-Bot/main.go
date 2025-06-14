@@ -3,33 +3,71 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"time"
 
-	"injective_pnl_bot/internal/api"
-	"injective_pnl_bot/internal/cache"
-	"injective_pnl_bot/internal/pnl"
-	"injective_pnl_bot/internal/streams"
+	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/api"
+	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/cache"
+	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/pnl"
+	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/streams"
+
+	"gopkg.in/yaml.v3"
 )
 
+type Config struct {
+	MarketID     string `yaml:"market_id"`
+	SubaccountID string `yaml:"subaccount_id"`
+}
+
 func main() {
-	// Initialize the cache
+	// Load configuration
+	configFile, err := os.ReadFile("config.yaml")
+	if err != nil {
+		log.Fatalf("Failed to read config file: %v", err)
+	}
+
+	var config Config
+	err = yaml.Unmarshal(configFile, &config)
+	if err != nil {
+		log.Fatalf("Failed to unmarshal config: %v", err)
+	}
+
+	// Initialize cache
 	cache.Init()
 
-	// User-specific details (replace these with your actual values)
-	subaccountID := "0xaf79152ac5df276d9a8e1e2e22822f9713474902000000000000000000000000"
-	marketID := "0xa508cb32923323679f29a032c70342c147c17d0145625922b0ef22e955c844c0"
-
-	// Fetch all historical trades first
+	// Fetch market details
 	ctx := context.Background()
-	err := api.FetchHistoricalTrades(ctx, subaccountID, marketID)
+	marketDetails, err := streams.FetchMarketDetails(ctx, config.MarketID)
+	if err != nil {
+		log.Fatalf("Failed to fetch market details: %v", err)
+	}
+
+	// Extract oracle details
+	baseSymbol := marketDetails.Market.OracleBase
+	quoteSymbol := marketDetails.Market.OracleQuote
+	oracleType := marketDetails.Market.OracleType
+
+	// Start price stream
+	go streams.SubscribeToMarketPriceStream(baseSymbol, quoteSymbol, oracleType)
+
+	// Wait briefly for price stream to initialize
+	time.Sleep(2 * time.Second)
+
+	// Fetch historical trades
+	err = api.FetchHistoricalTrades(ctx, config.SubaccountID, config.MarketID)
 	if err != nil {
 		log.Fatalf("Failed to fetch historical trades: %v", err)
 	}
 
-	// Start streaming live trades in a goroutine
-	go streams.SubscribeToTradeStream(subaccountID, marketID)
+	// Start live trade stream
+	go func() {
+		err := api.StreamLiveTrades(config.SubaccountID, config.MarketID)
+		if err != nil {
+			log.Fatalf("Failed to stream live trades: %v", err)
+		}
+	}()
 
-	// Periodically print realized PnL (every 5 seconds)
+	// Periodically print PnL
 	for {
 		time.Sleep(5 * time.Second)
 		pnl.PrintRealizedPnL()
