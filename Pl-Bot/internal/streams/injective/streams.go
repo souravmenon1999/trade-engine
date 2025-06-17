@@ -1,11 +1,11 @@
-package streams
+package injectiveStreams
 
 import (
 	"context"
 	"log"
 	"strings"
 	"sync"
-
+    "encoding/json"
 	"github.com/InjectiveLabs/sdk-go/client/common"
 	exchangeclient "github.com/InjectiveLabs/sdk-go/client/exchange"
 	derivativeExchangePB "github.com/InjectiveLabs/sdk-go/exchange/derivative_exchange_rpc/pb"
@@ -13,6 +13,12 @@ import (
 )
 
 // DerivativeMarketResponse mirrors the SDK's response structure for GetDerivativeMarket.
+type PortfolioResponse struct {
+    Type         string `json:"type"`
+    Denom        string `json:"denom"`
+    Amount       string `json:"amount"`
+    SubaccountId string `json:"subaccount_id"`
+}
 type DerivativeMarketResponse struct {
     Market struct {
         MarketID              string `json:"market_id"`
@@ -40,7 +46,7 @@ var (
 	priceMutex        sync.RWMutex
 )
 
-func FetchMarketDetails(ctx context.Context, marketID string) (*DerivativeMarketResponse, error) {
+func FetchMarketDetails(client exchangeclient.ExchangeClient,ctx context.Context, marketID string) (*DerivativeMarketResponse, error) {
     network := common.LoadNetwork("mainnet", "lb")
     exchangeClient, err := exchangeclient.NewExchangeClient(network)
     if err != nil {
@@ -51,6 +57,8 @@ func FetchMarketDetails(ctx context.Context, marketID string) (*DerivativeMarket
     if err != nil {
         return nil, err
     }
+
+	log.Printf("reponse: %v", res)
 
     response := &DerivativeMarketResponse{}
     response.Market.MarketID = res.Market.MarketId
@@ -75,7 +83,7 @@ func FetchMarketDetails(ctx context.Context, marketID string) (*DerivativeMarket
 }
 
 // SubscribeToTradeStream subscribes to live trade updates and returns a receiver function.
-func SubscribeToTradeStream(subaccountID, marketID string) (func() (*derivativeExchangePB.DerivativeTrade, error), error) {
+func SubscribeToTradeStream(client exchangeclient.ExchangeClient,subaccountID, marketID string) (func() (*derivativeExchangePB.DerivativeTrade, error), error) {
 	network := common.LoadNetwork("mainnet", "lb")
 	exchangeClient, err := exchangeclient.NewExchangeClient(network)
 	if err != nil {
@@ -104,7 +112,7 @@ func SubscribeToTradeStream(subaccountID, marketID string) (func() (*derivativeE
 }
 
 // SubscribeToMarketPriceStream subscribes to price updates using oracle details.
-func SubscribeToMarketPriceStream(baseSymbol, quoteSymbol, oracleType string) {
+func SubscribeToMarketPriceStream(client exchangeclient.ExchangeClient, baseSymbol, quoteSymbol, oracleType string) {
 	network := common.LoadNetwork("mainnet", "lb")
 	exchangeClient, err := exchangeclient.NewExchangeClient(network)
 	if err != nil {
@@ -117,6 +125,8 @@ func SubscribeToMarketPriceStream(baseSymbol, quoteSymbol, oracleType string) {
 		log.Fatalf("Failed to subscribe to price stream: %v", err)
 	}
 
+
+    
 	for {
 		res, err := stream.Recv()
 		if err != nil {
@@ -131,7 +141,7 @@ func SubscribeToMarketPriceStream(baseSymbol, quoteSymbol, oracleType string) {
 		priceMutex.Lock()
 		latestMarketPrice = price
 		priceMutex.Unlock()
-		log.Printf("Updated market price for %s/%s: %s", baseSymbol, quoteSymbol, price)
+		//log.Printf("Updated market price for %s/%s: %s", baseSymbol, quoteSymbol, price)
 	}
 }
 
@@ -140,4 +150,51 @@ func GetLatestMarketPrice() decimal.Decimal {
 	priceMutex.RLock()
 	defer priceMutex.RUnlock()
 	return latestMarketPrice
+}
+
+type StreamCallback func(res *PortfolioResponse, err error)
+
+
+func SubscribeToAccountPortfolioStream(
+    client exchangeclient.ExchangeClient,
+    accountAddress, subaccountID, portfolioType string,
+    callback StreamCallback,
+) error {
+    log.Println("Starting account portfolio stream subscription")
+    ctx := context.Background()
+    stream, err := client.StreamAccountPortfolio(ctx, accountAddress, subaccountID, portfolioType)
+    if err != nil {
+        return err
+    }
+
+    go func() {
+        for {
+            res, err := stream.Recv()
+            if err != nil {
+                log.Printf("Account portfolio stream error: %v", err)
+                callback(nil, err)
+                
+                // Attempt to reconnect after delay
+                //time.Sleep(3 * time.Second)
+                newStream, err := client.StreamAccountPortfolio(ctx, accountAddress, subaccountID, portfolioType)
+                if err != nil {
+                    log.Printf("Reconnection failed: %v", err)
+                    continue
+                }
+                stream = newStream
+                continue
+            }
+            
+            // Process response
+            jsonBytes, _ := json.Marshal(res)
+            var portfolio PortfolioResponse
+            if err := json.Unmarshal(jsonBytes, &portfolio); err == nil {
+                callback(&portfolio, nil)
+            } else {
+                log.Printf("Error unmarshaling portfolio response: %v", err)
+            }
+        }
+    }()
+    
+    return nil
 }
