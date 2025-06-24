@@ -25,3 +25,4 @@ injectiveExchange:
     symbol: "ETHUSDT"
     base_currency: "ETH"
     quote_currency: "USDT"
+  quicknode_grpc_endpoint: "https://withered-nameless-breeze.injective-mainnet.quiknode.pro/b826e3dd242d866f5437b95b1b1a42f406f1c030"

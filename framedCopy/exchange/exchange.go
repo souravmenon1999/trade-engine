@@ -4,6 +4,7 @@ import (
     "sync"
     "github.com/souravmenon1999/trade-engine/framedCopy/types"
     "github.com/souravmenon1999/trade-engine/framedCopy/config"
+
 )
 
 type ConnectionState interface {
@@ -23,6 +24,9 @@ type Exchange interface {
     Connect() error
     SubscribeAll(cfg *config.Config) error
     StartReading()
+    SetFundingRateHandler(handler FundingRateHandler)
+    SetOrderbookHandler(handler OrderbookHandler)
+    
 }
 
 type TradingHandler interface {
@@ -33,6 +37,13 @@ type TradingHandler interface {
     OnOrderConnect()
 }
 
+type FundingRateHandler interface {
+    OnFundingRateUpdate(exchange types.ExchangeID, fundingRate *types.FundingRate)
+    OnFundingRateError(error string)
+    OnFundingRateConnect()
+    OnFundingRateDisconnect()
+}
+
 type ExecutionHandler interface {
     OnExecutionUpdate(executions []*types.OrderUpdate)
     OnExecutionDisconnect()
@@ -41,7 +52,7 @@ type ExecutionHandler interface {
 }
 
 type OrderbookHandler interface {
-    OnOrderbook(orderbook *types.OrderBook)
+    OnOrderbookUpdate(exchangeID types.ExchangeID, update *types.OrderBookUpdate)
     OnOrderbookDisconnect()
     OnOrderbookError(error string)
     OnOrderbookConnect()

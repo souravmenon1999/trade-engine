@@ -41,6 +41,7 @@ type InjectiveExchangeConfig struct {
 	PrivKey       string `mapstructure:"priv_key"`
 	MarketId      string `mapstructure:"market_id"`
 	SubaccountId  string `mapstructure:"subaccount_id"`
+	QuickNodeGrpcEndpoint string `mapstructure:"quicknode_grpc_endpoint"`
 }
 
 type InjectiveOrderbookConfig struct {

@@ -23,6 +23,7 @@ type BybitClient struct {
 	tradingHandler   exchange.TradingHandler
 	executionHandler exchange.ExecutionHandler
 	orderbookHandler exchange.OrderbookHandler
+	fundingRateHandler exchange.FundingRateHandler
 	accountHandler   exchange.AccountHandler
 	apiKey           string
 	apiSecret        string
@@ -52,8 +53,9 @@ func NewBybitClient(cfg *config.Config, onReadyCallback func()) *BybitClient {
 	}
 
 	// Register handlers
-	mdHandler := NewBybitMDHandler(client.orderbookHandler, client.symbol)
+	mdHandler := NewBybitMDHandler(client, client.symbol)
 	publicWS.RegisterHandler(fmt.Sprintf("orderbook.%d.%s", cfg.BybitOrderbook.OrderbookDepth, client.symbol), mdHandler)
+	publicWS.RegisterHandler(fmt.Sprintf("tickers.%s", client.symbol), mdHandler)
 
 	tradingHandler := NewBybitTradingHandler(client.tradingHandler)
 	tradingWS.RegisterHandler("order", tradingHandler)
@@ -120,12 +122,16 @@ func (c *BybitClient) connectAttempt() error {
 
 func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
 
-	
+	log.Info().Str("symbol", c.symbol).Msg("Subscribing to Bybit public topics")
     // Subscribe publicWS to orderbook
-    publicSub := map[string]interface{}{
-        "op":   "subscribe",
-        "args": []interface{}{fmt.Sprintf("orderbook.%d.%s", cfg.BybitOrderbook.OrderbookDepth, c.symbol)},
-    }
+   publicSub := map[string]interface{}{
+
+		"op": "subscribe",
+		"args": []interface{}{
+			fmt.Sprintf("orderbook.%d.%s", cfg.BybitOrderbook.OrderbookDepth, c.symbol),
+			fmt.Sprintf("tickers.%s", c.symbol), 
+		},
+	}
     if err := c.publicWS.Subscribe(publicSub); err != nil {
         return fmt.Errorf("failed to subscribe to public topic: %w", err)
     }
@@ -194,6 +200,11 @@ func (c *BybitClient) SetOrderbookHandler(handler exchange.OrderbookHandler) {
 func (c *BybitClient) SetAccountHandler(handler exchange.AccountHandler) {
 	c.accountHandler = handler
 	log.Info().Msg("Set account handler for Bybit")
+}
+
+func (c *BybitClient) SetFundingRateHandler(handler exchange.FundingRateHandler) {
+	c.fundingRateHandler = handler
+	log.Info().Msg("Set funding rate handler for Bybit")
 }
 
 func (c *BybitClient) SendOrder(order *types.Order) (string, error) {

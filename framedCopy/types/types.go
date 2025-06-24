@@ -1,5 +1,9 @@
 package types
 
+import(
+	"time"
+)
+
 
 
 const (
@@ -123,4 +127,11 @@ func NewPerpetualInstrument(symbol, baseCurrency, quoteCurrency string, minLotSi
         MinLotSize:    NewQuantity(minLotSize),
         ContractType:  ContractTypePerpetual,
     }
+}
+
+type FundingRate struct {
+    Rate               float64       
+    Interval           time.Duration 
+    LastUpdated        int64         
+    NextFundingTimestamp int64        
 }

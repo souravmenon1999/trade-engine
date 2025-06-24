@@ -3,13 +3,11 @@ package types
 import(
 	"sync"
 	"sync/atomic"
-	"hash/fnv"
+	"time"
 
 )
 
-const (
-	NUM_SHARDS   = 32
-)
+
 
 
 type Price struct {
@@ -41,141 +39,144 @@ func (q *Quantity) ToFloat64() float64 {
 
 
 func scale(value float64) int64 { return int64(value * SCALE_FACTOR_F64) }
-func unscale(value int64) float64 { return float64(value) / SCALE_FACTOR_F64 }
+func Unscale(value int64) float64 { return float64(value) / SCALE_FACTOR_F64 }
 
 
-
-
-type PriceLevel struct {
-	Price      int64  
-	Quantity   int64  
-	OrderCount uint32 
-}
-
-func NewPriceLevel(price, quantity int64, orderCount uint32) *PriceLevel {
-	return &PriceLevel{Price: price, Quantity: quantity, OrderCount: orderCount}
-}
-
-// GetPrice returns the price of the level as an unscaled float64.
-func (pl *PriceLevel) GetPrice() float64 { return float64(pl.Price) / SCALE_FACTOR_F64 }
-
-// GetQuantity returns the total quantity at the level as an unscaled float64.
-func (pl *PriceLevel) GetQuantity() float64 { return float64(pl.Quantity) / SCALE_FACTOR_F64 }
-
-// GetOrderCount returns the number of orders at the level.
-func (pl *PriceLevel) GetOrderCount() uint32 { return pl.OrderCount }
-
-// OrderBookUpdate represents a single update event for a price level in an order book.
 type OrderBookUpdate struct {
 	Price      int64  
 	Quantity   int64  
 	Side       Side   
-	OrderCount uint32 
+	OrderCount uint32
+	Sequence   int64 
+	
 	
 }
 
-func NewOrderBookUpdate(price, quantity float64, side Side, orderCount uint32) *OrderBookUpdate {
-	return &OrderBookUpdate{Price: scale(price), Quantity: scale(quantity), Side: side, OrderCount: orderCount}
+// PriceLevel represents a single price level in the order book.
+type PriceLevel struct {
+	Quantity   int64         // Scaled quantity
+	OrderCount uint32        // Number of orders at this level
+	mu         sync.RWMutex  // Mutex for thread-safe updates to this level
+}
+
+// OrderBook represents the order book for an instrument on an exchange.
+type OrderBook struct {
+	Instrument     *Instrument
+	Bids           sync.Map      // Map of int64 (scaled price) to *PriceLevel
+	Asks           sync.Map      // Map of int64 (scaled price) to *PriceLevel
+	LastUpdateTime atomic.Int64  // Last update timestamp
+	Sequence       atomic.Int64  // Sequence number for ordering updates
+	Exchange       *ExchangeID
+}
+
+// NewOrderBook creates a new OrderBook instance.
+func NewOrderBook(instrument *Instrument, exchange *ExchangeID) *OrderBook {
+	return &OrderBook{
+		Instrument: instrument,
+		Exchange:   exchange,
+	}
 }
 
 // IsRemoval checks if this update signifies the removal of a price level.
-func (obu *OrderBookUpdate) IsRemoval() bool { return obu.Quantity == 0 }
-
-// BidUpdate is a convenience function to create a Buy-side OrderBookUpdate.
-func BidUpdate(price, quantity float64, orderCount uint32) *OrderBookUpdate { return NewOrderBookUpdate(price, quantity, SideBuy, orderCount) }
-
-// AskUpdate is a convenience function to create a Sell-side OrderBookUpdate.
-func AskUpdate(price, quantity float64, orderCount uint32) *OrderBookUpdate { return NewOrderBookUpdate(price, quantity, SideSell, orderCount) }
-
-// Shard holds a segment of the order book, protecting its price levels with a mutex.
-type Shard struct {
-	levels map[int64]*PriceLevel 
-	mu     sync.RWMutex         
+func (u *OrderBookUpdate) IsRemoval() bool {
+	return u.Quantity == 0
 }
 
-func getShardIndex(price int64) uint32 {
-	h := fnv.New32a()
-	var b [8]byte
-	for i := 0; i < 8; i++ { b[i] = byte(price >> (8 * i)) }
-	h.Write(b[:])
-	return h.Sum32() % NUM_SHARDS
-}
-
-
-type OrderBook struct {
-    Instrument     *Instrument
-    AsksShards     []*Shard 
-    BidsShards     []*Shard 
-    LastUpdateTime atomic.Int64
-    Sequence       atomic.Int64
-    Exchange       *ExchangeID
-}
-
-func NewOrderBook(instrument *Instrument, exchange *ExchangeID) *OrderBook {
-	ob := &OrderBook{
-		Instrument: instrument,
-		Exchange:   exchange,
-		AsksShards: make([]*Shard, NUM_SHARDS), 
-		BidsShards: make([]*Shard, NUM_SHARDS), 
+// NewOrderBookUpdate creates a new OrderBookUpdate with scaled price and quantity.
+func NewOrderBookUpdate(price, quantity float64, side Side, orderCount uint32, sequence int64) *OrderBookUpdate {
+	return &OrderBookUpdate{
+		Price:      scale(price),
+		Quantity:   scale(quantity),
+		Side:       side,
+		OrderCount: orderCount,
+		Sequence:   sequence,
 	}
-	for i := 0; i < NUM_SHARDS; i++ {
-		ob.AsksShards[i] = &Shard{levels: make(map[int64]*PriceLevel)}
-		ob.BidsShards[i] = &Shard{levels: make(map[int64]*PriceLevel)}
-	}
-	return ob
 }
 
-// GetSymbol returns the instrument symbol.
-func (ob *OrderBook) GetSymbol() string { return ob.Instrument.Symbol }
-
-// SetLastUpdateTime sets last update time atomically.
-func (ob *OrderBook) SetLastUpdateTime(timestamp int64) { ob.LastUpdateTime.Store(timestamp) }
-
-// GetLastUpdateTime gets last update time.
-func (ob *OrderBook) GetLastUpdateTime() (int64, bool) {
-	time := ob.LastUpdateTime.Load()
-	return time, time != UNSET_VALUE
+func BidUpdate(price, quantity float64, orderCount uint32, sequence int64) *OrderBookUpdate {
+	return NewOrderBookUpdate(price, quantity, SideBuy, orderCount, sequence)
 }
 
-// SetSequence sets sequence number atomically.
-func (ob *OrderBook) SetSequence(seq int64) { ob.Sequence.Store(seq) }
-
-// GetSequence gets sequence number.
-func (ob *OrderBook) GetSequence() (int64, bool) {
-	seq := ob.Sequence.Load()
-	return seq, seq != UNSET_VALUE
+func AskUpdate(price, quantity float64, orderCount uint32, sequence int64) *OrderBookUpdate {
+	return NewOrderBookUpdate(price, quantity, SideSell, orderCount, sequence)
 }
 
-// ApplyUpdate applies a single order book update with sharding.
+// SetLastUpdateTime sets the last update timestamp atomically.
+func (ob *OrderBook) SetLastUpdateTime(ts int64) {
+	ob.LastUpdateTime.Store(ts)
+}
+
+// SetSequence sets the sequence number atomically.
+func (ob *OrderBook) SetSequence(seq int64) {
+	ob.Sequence.Store(seq)
+}
+
+// ApplyUpdate applies a single order book update.
 func (ob *OrderBook) ApplyUpdate(update *OrderBookUpdate) {
-	var targetShards []*Shard
-	if update.Side == SideBuy { 
-		targetShards = ob.BidsShards
-	} else { 
-		targetShards = ob.AsksShards
+	var targetMap *sync.Map
+	if update.Side == SideBuy {
+		targetMap = &ob.Bids
+	} else {
+		targetMap = &ob.Asks
 	}
 
-	shardIndex := getShardIndex(update.Price)
-	shard := targetShards[shardIndex]
+	priceKey := update.Price
 
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
+	// Load or create the price level
+	plInterface, _ := targetMap.LoadOrStore(priceKey, &PriceLevel{})
+	pl := plInterface.(*PriceLevel)
+
+	// Lock only this price level for writing
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
 
 	if update.IsRemoval() {
-		delete(shard.levels, update.Price)
+		targetMap.Delete(priceKey)
 	} else {
-		if pl, ok := shard.levels[update.Price]; ok {
-			pl.Quantity = update.Quantity
-			pl.OrderCount = update.OrderCount
-		} else {
-			shard.levels[update.Price] = NewPriceLevel(update.Price, update.Quantity, update.OrderCount)
-		}
+		pl.Quantity = update.Quantity
+		pl.OrderCount = update.OrderCount
 	}
+
+	// Update metadata
+	ob.LastUpdateTime.Store(time.Now().UnixMilli())
 }
 
-// ApplyUpdates applies multiple order book updates sequentially.
-func (ob *OrderBook) ApplyUpdates(updates []*OrderBookUpdate) {
-	for _, update := range updates {
-		ob.ApplyUpdate(update)
+// GetMidPrice calculates the mid-price from the best bid and ask.
+func (ob *OrderBook) GetMidPrice() (float64, bool) {
+	var bestBid, bestAsk int64
+	var hasBid, hasAsk bool
+
+	ob.Bids.Range(func(key, value interface{}) bool {
+		price := key.(int64)
+		if price > bestBid {
+			bestBid = price
+			hasBid = true
+		}
+		return true
+	})
+
+	ob.Asks.Range(func(key, value interface{}) bool {
+		price := key.(int64)
+		if !hasAsk || price < bestAsk {
+			bestAsk = price
+			hasAsk = true
+		}
+		return true
+	})
+
+	if !hasBid || !hasAsk {
+		return 0, false
 	}
+
+	// Assuming unscale converts int64 price to float64 (implement as needed)
+	midPrice := (Unscale(bestBid) + Unscale(bestAsk)) / 2
+	return midPrice, true
 }
+
+// GetSequence returns the current sequence number.
+func (ob *OrderBook) GetSequence() (int64, bool) {
+	return ob.Sequence.Load(), true
+}
+
+
+

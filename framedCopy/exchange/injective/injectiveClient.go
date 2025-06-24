@@ -3,18 +3,21 @@ package injective
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"fmt"
 	"log"
 	"strings"
 	"sync/atomic"
 	"time"
 	"strconv"
+    "google.golang.org/grpc"                // Added for gRPC client configuration
+	//"github.com/InjectiveLabs/sdk-go/client/chain"
 	exchangetypes "github.com/InjectiveLabs/sdk-go/chain/exchange/types"
 	chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
 	"github.com/InjectiveLabs/sdk-go/client/common"
 	exchangeclient "github.com/InjectiveLabs/sdk-go/client/exchange"
 	derivativeExchangePB "github.com/InjectiveLabs/sdk-go/exchange/derivative_exchange_rpc/pb"
-	"github.com/cometbft/cometbft/rpc/client/http"
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/cosmos-sdk/client"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/shopspring/decimal"
@@ -23,6 +26,8 @@ import (
 	"github.com/souravmenon1999/trade-engine/framedCopy/new" // Use common WebSocket client
 	"github.com/souravmenon1999/trade-engine/framedCopy/types"
 	logs "github.com/rs/zerolog/log"
+	
+	
 )
 
 // InjectiveClient manages connections and subscriptions for Injective Protocol
@@ -40,14 +45,25 @@ type InjectiveClient struct {
 	orderFillTracker map[string]float64
 	orderbookHandler exchange.OrderbookHandler
 	accountHandler   exchange.AccountHandler
+	fundingRateHandler exchange.FundingRateHandler
 	orderCancel      context.CancelFunc
 	fundingCancel    context.CancelFunc
 	accountCancel    context.CancelFunc
 	bookCancel       context.CancelFunc
 	cfg              *config.Config // Add config field to store configuration
+	grpcConn         *grpc.ClientConn
+	grpcUsername     string
+	grpcToken        string
+	fundingRate        float64       
+	fundingInterval    time.Duration 
+	fundingRateMu      sync.Mutex 
 }
 
-// NewInjectiveClient creates and initializes a new Injective client
+
+
+
+
+//NewInjectiveClient creates and initializes a new Injective client
 func NewInjectiveClient(cfg *config.Config) (*InjectiveClient, error) {
 	log.Printf("Starting InjectiveClient initialization")
 
@@ -57,10 +73,22 @@ func NewInjectiveClient(cfg *config.Config) (*InjectiveClient, error) {
 	privKey := cfg.InjectiveExchange.PrivKey
 	marketId := cfg.InjectiveExchange.MarketId
 	subaccountId := cfg.InjectiveExchange.SubaccountId
+	//quickNodeWsEndpoint := "wss://withered-nameless-breeze.injective-mainnet.quiknode.pro/b826e3dd242d866f5437b95b1b1a42f406f1c030"
 
-	network := common.LoadNetwork(networkName, lb)
+	// Define QuickNode endpoints
+    //quickNodeEndpoint := "https://withered-nameless-breeze.injective-mainnet.quiknode.pro/b826e3dd242d866f5437b95b1b1a42f406f1c030"
+    //httpURL := quickNodeEndpoint
+    //wssURL := strings.Replace(quickNodeEndpoint, "https://", "wss://", 1) + "websocket"
+    //target, grpcOpts := getGrpcOptions(quickNodeEndpoint) // Assumes this function returns target string and gRPC options
 
-	tmClient, err := http.New(network.TmEndpoint, "/websocket")
+    // Load network and override with QuickNode endpoints
+    network := common.LoadNetwork(networkName, lb)
+    log.Printf("network %v", network)
+    //network.TmEndpoint = httpURL
+    //network.ChainGrpcEndpoint = target
+    //network.ExchangeGrpcEndpoint = target
+
+	tmClient, err := rpchttp.New(network.TmEndpoint, "/websockets")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Tendermint client: %w", err)
 	}
@@ -80,6 +108,8 @@ func NewInjectiveClient(cfg *config.Config) (*InjectiveClient, error) {
 	}
 	clientCtx = clientCtx.WithNodeURI(network.TmEndpoint).WithClient(tmClient)
 
+	
+
 	tradeClient, err := chainclient.NewChainClient(
 		clientCtx, network, common.OptionGasPrices("0.0005inj"),
 	)
@@ -88,10 +118,10 @@ func NewInjectiveClient(cfg *config.Config) (*InjectiveClient, error) {
 	}
 	log.Println("✅ Trade client initialized successfully")
 
-	updatesClient, err := exchangeclient.NewExchangeClient(network)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create updates client: %w", err)
-	}
+	updatesClient, err := exchangeclient.NewExchangeClient(
+        network,
+    
+    )
 	log.Println("📊 Orderbook updates client ready")
 
 	client := &InjectiveClient{
@@ -105,6 +135,7 @@ func NewInjectiveClient(cfg *config.Config) (*InjectiveClient, error) {
 		latestGasPrice:   atomic.Int64{},
 		orderFillTracker: make(map[string]float64),
 		cfg:              cfg, // Store the config
+		
 	}
 
 	// Register gas price handler
@@ -117,6 +148,9 @@ func NewInjectiveClient(cfg *config.Config) (*InjectiveClient, error) {
 
 	return client, nil
 }
+
+
+
 
 // Connect establishes the WebSocket connection and subscribes to streams
 func (c *InjectiveClient) Connect() error {
@@ -147,13 +181,11 @@ func (c *InjectiveClient) SubscribeAll(cfg *config.Config) error {
 
 	// Funding rates subscription
 	fundingCtx, fundingCancel := context.WithCancel(context.Background())
-	if err := c.SubscribeFundingRates(marketId, func(data []byte) {
-		log.Printf("Funding rate update: %s", string(data))
-	}, fundingCtx); err != nil {
-		log.Printf("Failed to subscribe to funding rates: %v", err)
-		return err
-	}
-	c.fundingCancel = fundingCancel
+if err := c.SubscribeFundingRates(marketId, fundingCtx); err != nil {
+    log.Printf("Failed to subscribe to funding rates: %v", err)
+    return err
+}
+c.fundingCancel = fundingCancel
 
 	// Account updates subscription
 	accountCtx, accountCancel := context.WithCancel(context.Background())
@@ -200,6 +232,11 @@ func (c *InjectiveClient) SetOnReadyCallback(callback func()) {
 	// No-op for Injective, as it doesn't use this callback
 }
 
+func (c *InjectiveClient) SetOrderbookHandler(handler exchange.OrderbookHandler) {
+	c.orderbookHandler = handler
+	log.Printf("Set orderbook handler for Injective")
+}
+
 // GetOnReadyCallback returns the on-ready callback (not used here)
 func (c *InjectiveClient) GetOnReadyCallback() func() {
 	return nil
@@ -240,6 +277,11 @@ func (c *InjectiveClient) SetExecutionHandler(handler exchange.ExecutionHandler)
 func (c *InjectiveClient) SetAccountHandler(handler exchange.AccountHandler) {
 	c.accountHandler = handler
 	log.Printf("Set account handler for Injective")
+}
+
+func (c *InjectiveClient) SetFundingRateHandler(handler exchange.FundingRateHandler) {
+    c.fundingRateHandler = handler
+    log.Printf("Set funding rate handler for Injective")
 }
 
 func (c *InjectiveClient) SubscribeAccountUpdates(subaccountId string, ctx context.Context) error {
@@ -336,6 +378,106 @@ func parseAccountUpdate(res interface{}) *types.AccountUpdate {
 }
 
 func (c *InjectiveClient) SubscribeOrderbook(marketId string, ctx context.Context) error {
+	// Fetch and process snapshot first
+	if err := c.FetchOrderbookSnapshot(marketId, ctx); err != nil {
+		return fmt.Errorf("failed to process snapshot: %w", err)
+	}
+
+	// Start streaming updates
+	if err := c.StreamOrderbookUpdates(marketId, ctx); err != nil {
+		return fmt.Errorf("failed to start streaming updates: %w", err)
+	}
+
+	return nil
+}
+
+func (c *InjectiveClient) FetchOrderbookSnapshot(marketId string, ctx context.Context) error {
+	
+
+	// Fetch initial snapshot
+	res, err := c.updatesClient.GetDerivativeOrderbooksV2(ctx, []string{marketId})
+	if err != nil {
+		return fmt.Errorf("failed to fetch orderbook snapshot: %w", err)
+	}
+
+	var wg sync.WaitGroup
+
+	if len(res.Orderbooks) > 0 {
+		snapshot := res.Orderbooks[0].Orderbook
+		sequence := int64(snapshot.Sequence)
+
+		// Concurrently unmarshall snapshot bids
+		for _, buy := range snapshot.Buys {
+			wg.Add(1)
+			go func(buy *derivativeExchangePB.PriceLevel) {
+				defer wg.Done()
+				price, err := strconv.ParseFloat(buy.Price, 64)
+				if err != nil {
+					logs.Error().Err(err).Msg("Invalid snapshot buy price")
+					return
+				}
+				quantity, err := strconv.ParseFloat(buy.Quantity, 64)
+				if err != nil {
+					logs.Error().Err(err).Msg("Invalid snapshot buy quantity")
+					return
+				}
+				update := types.NewOrderBookUpdate(price, quantity, types.SideBuy, 1, sequence)
+				if c.orderbookHandler != nil {
+					c.orderbookHandler.OnOrderbookUpdate(types.ExchangeIDInjective, update)
+					// logs.Info().
+					// 	Str("market_id", marketId).
+					// 	Float64("price", types.Unscale(update.Price)).
+					// 	Float64("quantity", types.Unscale(update.Quantity)).
+					// 	Str("side", string(types.SideBuy)).
+					// 	Int64("sequence", update.Sequence).
+					// 	Msg("Snapshot orderbook update sent")
+				}
+			}(buy)
+		}
+
+		// Concurrently unmarshall snapshot sells
+		for _, sell := range snapshot.Sells {
+			wg.Add(1)
+			go func(sell *derivativeExchangePB.PriceLevel) {
+				defer wg.Done()
+				price, err := strconv.ParseFloat(sell.Price, 64)
+				if err != nil {
+					logs.Error().Err(err).Msg("Invalid snapshot sell price")
+					return
+				}
+				quantity, err := strconv.ParseFloat(sell.Quantity, 64)
+				if err != nil {
+					logs.Error().Err(err).Msg("Invalid snapshot sell quantity")
+					return
+				}
+				update := types.NewOrderBookUpdate(price, quantity, types.SideSell, 1, sequence)
+				if c.orderbookHandler != nil {
+					c.orderbookHandler.OnOrderbookUpdate(types.ExchangeIDInjective, update)
+					// logs.Info().
+					// 	Str("market_id", marketId).
+					// 	Float64("price", types.Unscale(update.Price)).
+					// 	Float64("quantity", types.Unscale(update.Quantity)).
+					// 	Str("side", string(types.SideSell)).
+					// 	Int64("sequence", update.Sequence).
+					// 	Msg("Snapshot orderbook update sent")
+				}
+			}(sell)
+		}
+
+		// Wait for all goroutines to complete
+		wg.Wait()
+	} else {
+		logs.Warn().Msg("No orderbook snapshot received")
+	}
+
+	return nil
+}
+
+// StreamOrderbookUpdates streams delta updates for the orderbook
+func (c *InjectiveClient) StreamOrderbookUpdates(marketId string, ctx context.Context) error {
+
+
+	// Start streaming delta updates
 	stream, err := c.updatesClient.StreamDerivativeOrderbookUpdate(ctx, []string{marketId})
 	if err != nil {
 		return fmt.Errorf("failed to stream orderbook updates: %w", err)
@@ -352,19 +494,72 @@ func (c *InjectiveClient) SubscribeOrderbook(marketId string, ctx context.Contex
 			default:
 				res, err := stream.Recv()
 				if err != nil {
-					log.Printf("Orderbook stream error: %v", err)
+					logs.Error().Err(err).Msg("Orderbook stream error")
 					time.Sleep(5 * time.Second)
 					continue
 				}
-				orderbook, err := parseInjectiveOrderbook(res, marketId)
-				if err != nil {
-					if c.orderbookHandler != nil {
-						c.orderbookHandler.OnOrderbookError(fmt.Sprintf("Failed to parse orderbook: %v", err))
-					}
+				if res == nil || res.OrderbookLevelUpdates == nil {
 					continue
 				}
-				if c.orderbookHandler != nil {
-					c.orderbookHandler.OnOrderbook(orderbook)
+
+				for _, b := range res.OrderbookLevelUpdates.Buys {
+					price, err := strconv.ParseFloat(b.Price, 64)
+					if err != nil {
+						logs.Error().Err(err).Msg("Invalid delta buy price")
+						continue
+					}
+					quantity, err := strconv.ParseFloat(b.Quantity, 64)
+					if err != nil {
+						logs.Error().Err(err).Msg("Invalid delta buy quantity")
+						continue
+					}
+					quantityVal := quantity
+					orderCount := uint32(1)
+					if !b.IsActive {
+						quantityVal = 0
+						orderCount = 0
+					}
+					update := types.NewOrderBookUpdate(price, quantityVal, types.SideBuy, orderCount, int64(res.OrderbookLevelUpdates.Sequence))
+					if c.orderbookHandler != nil {
+						c.orderbookHandler.OnOrderbookUpdate(types.ExchangeIDInjective, update)
+						// logs.Info().
+						// 	Str("market_id", marketId).
+						// 	Float64("price", types.Unscale(update.Price)).
+						// 	Float64("quantity", types.Unscale(update.Quantity)).
+						// 	Str("side", string(types.SideBuy)).
+						// 	Int64("sequence", int64(res.OrderbookLevelUpdates.Sequence)).
+						// 	Msg("Delta orderbook update sent")
+					}
+				}
+
+				for _, a := range res.OrderbookLevelUpdates.Sells {
+					price, err := strconv.ParseFloat(a.Price, 64)
+					if err != nil {
+						logs.Error().Err(err).Msg("Invalid delta sell price")
+						continue
+					}
+					quantity, err := strconv.ParseFloat(a.Quantity, 64)
+					if err != nil {
+						logs.Error().Err(err).Msg("Invalid delta sell quantity")
+						continue
+					}
+					quantityVal := quantity
+					orderCount := uint32(1)
+					if !a.IsActive {
+						quantityVal = 0
+						orderCount = 0
+					}
+					update := types.NewOrderBookUpdate(price, quantityVal, types.SideSell, orderCount, int64(res.OrderbookLevelUpdates.Sequence))
+					if c.orderbookHandler != nil {
+						c.orderbookHandler.OnOrderbookUpdate(types.ExchangeIDInjective, update)
+						// logs.Info().
+						// 	Str("market_id", marketId).
+						// 	Float64("price", types.Unscale(update.Price)).
+						// 	Float64("quantity", types.Unscale(update.Quantity)).
+						// 	Str("side", string(types.SideSell)).
+						// 	Int64("sequence", int64(res.OrderbookLevelUpdates.Sequence)).
+						// 	Msg("Delta orderbook update sent")
+					}
 				}
 			}
 		}
@@ -374,56 +569,6 @@ func (c *InjectiveClient) SubscribeOrderbook(marketId string, ctx context.Contex
 		c.orderbookHandler.OnOrderbookConnect()
 	}
 	return nil
-}
-
-func parseInjectiveOrderbook(res *derivativeExchangePB.StreamOrderbookUpdateResponse, marketId string) (*types.OrderBook, error) {
-	if res == nil || res.OrderbookLevelUpdates == nil {
-		return nil, fmt.Errorf("nil response or orderbook updates")
-	}
-
-	instrument := &types.Instrument{Symbol: marketId}
-	exchange := types.ExchangeIDInjective
-	orderbook := types.NewOrderBook(instrument, &exchange)
-
-	for _, b := range res.OrderbookLevelUpdates.Buys {
-		price, err := strconv.ParseFloat(b.Price, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid buy price: %v", err)
-		}
-		quantity, err := strconv.ParseFloat(b.Quantity, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid buy quantity: %v", err)
-		}
-		if b.IsActive {
-			update := types.BidUpdate(price, quantity, 1)
-			orderbook.ApplyUpdate(update)
-		} else {
-			update := types.BidUpdate(price, 0, 0)
-			orderbook.ApplyUpdate(update)
-		}
-	}
-
-	for _, a := range res.OrderbookLevelUpdates.Sells {
-		price, err := strconv.ParseFloat(a.Price, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid sell price: %v", err)
-		}
-		quantity, err := strconv.ParseFloat(a.Quantity, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid sell quantity: %v", err)
-		}
-		if a.IsActive {
-			update := types.AskUpdate(price, quantity, 1)
-			orderbook.ApplyUpdate(update)
-		} else {
-			update := types.AskUpdate(price, 0, 0)
-			orderbook.ApplyUpdate(update)
-		}
-	}
-
-	orderbook.SetLastUpdateTime(res.Timestamp)
-	orderbook.SetSequence(int64(res.OrderbookLevelUpdates.Sequence))
-	return orderbook, nil
 }
 
 func (c *InjectiveClient) subscribeOrderHistoryWithRetry(marketId, subaccountId string, ctx context.Context) {
@@ -455,6 +600,7 @@ func (c *InjectiveClient) subscribeOrderHistoryWithRetry(marketId, subaccountId 
 }
 
 func (c *InjectiveClient) SubscribeOrderHistory(marketId, subaccountId string, ctx context.Context) error {
+	
 	log.Printf("Starting order history for Market: %s, Subaccount: %s", marketId, subaccountId)
 
 	req := &derivativeExchangePB.StreamOrdersHistoryRequest{
@@ -595,50 +741,70 @@ func (c *InjectiveClient) handleExecutionUpdate(orderUpdate *types.OrderUpdate) 
 	}
 }
 
-func (c *InjectiveClient) SubscribeFundingRates(marketId string, callback func([]byte), ctx context.Context) error {
-	stream, err := c.updatesClient.StreamDerivativeMarket(ctx, []string{marketId})
-	if err != nil {
-		return fmt.Errorf("failed to subscribe to derivative market stream: %w", err)
-	}
+// In injectiveClient.go
+func (c *InjectiveClient) SubscribeFundingRates(marketId string, ctx context.Context) error {
 
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				res, err := stream.Recv()
-				if err != nil {
-					log.Printf("Funding rates stream error: %v", err)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				fundingData := struct {
-					PerpetualMarketInfo    interface{} `json:"perpetual_market_info"`
-					PerpetualMarketFunding interface{} `json:"perpetual_market_funding"`
-				}{
-					PerpetualMarketInfo:    res.Market.PerpetualMarketInfo,
-					PerpetualMarketFunding: res.Market.PerpetualMarketFunding,
-				}
-				data, err := json.Marshal(fundingData)
-				if err != nil {
-					log.Printf("Error marshaling funding data: %v", err)
-					continue
-				}
-				callback(data)
-			}
-		}
-	}()
+    stream, err := c.updatesClient.StreamDerivativeMarket(ctx, []string{marketId})
+    if err != nil {
+        return fmt.Errorf("failed to subscribe to derivative market stream: %w", err)
+    }
 
-	log.Printf("Subscribed to funding rate updates for market: %s", marketId)
-	return nil
+    go func() {
+        var nextFundingTimestamp int64
+        var fundingInterval int64 = 3600 // Default to 1 hour if not yet received
+        for {
+            select {
+            case <-ctx.Done():
+                if c.fundingRateHandler != nil {
+                    c.fundingRateHandler.OnFundingRateDisconnect()
+                }
+                return
+            default:
+                res, err := stream.Recv()
+                if err != nil {
+                    logs.Error().Err(err).Msg("Funding rates stream error")
+                    time.Sleep(5 * time.Second)
+                    continue
+                }
+                fundingRate, err := c.parseFundingRate(res)
+                if err != nil {
+                    if c.fundingRateHandler != nil {
+                        c.fundingRateHandler.OnFundingRateError(fmt.Sprintf("Failed to parse funding rate: %v", err))
+                    }
+                    continue
+                }
+                if c.fundingRateHandler != nil {
+                    c.fundingRateHandler.OnFundingRateUpdate(types.ExchangeIDInjective, fundingRate)
+                }
+                // Start or adjust scheduled fetch with updated timestamp and interval
+                if res.Market != nil && res.Market.PerpetualMarketInfo != nil {
+                    nextFundingTimestamp = res.Market.PerpetualMarketInfo.NextFundingTimestamp
+                    fundingInterval = res.Market.PerpetualMarketInfo.FundingInterval
+                    go c.FetchScheduledFundingRates(marketId, ctx, nextFundingTimestamp, fundingInterval)
+                }
+            }
+        }
+    }()
+
+    if c.fundingRateHandler != nil {
+        c.fundingRateHandler.OnFundingRateConnect()
+    }
+    logs.Info().Str("market_id", marketId).Msg("Subscribed to funding rate updates")
+    return nil
 }
 
+
+
+
+
+
+//send order
 func (c *InjectiveClient) SendOrder(order *types.Order) (string, error) {
 	clientOrderID := order.ClientOrderID.String()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		
 
 		price := decimal.NewFromFloat(order.GetPrice())
 		quantity := decimal.NewFromFloat(order.GetQuantity())
@@ -779,5 +945,16 @@ func (c *InjectiveClient) Close() {
 	if c.wsClient != nil {
 		c.wsClient.Close()
 	}
-	log.Println("🛑 Injective client shut down at 08:00AM INF")
+	if c.grpcConn != nil {
+        log.Println("Closing gRPC connection")
+        c.grpcConn.Close()
+    }
+    log.Println("🛑 Injective client shut down")
 }
+
+
+
+
+
+
+
