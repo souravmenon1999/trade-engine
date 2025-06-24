@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
+	// "time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -115,7 +115,7 @@ func (h *GasPriceHandler) Handle(message []byte) error {
         h.callback(txGasPrice)
     }
 
-    currentTime := time.Now().Format("3:04PM MST")
-    log.Info().Int64("gasPrice", txGasPrice).Str("time", currentTime).Msg("Gas price update processed successfully")
+    // currentTime := time.Now().Format("3:04PM MST")
+    // log.Info().Int64("gasPrice", txGasPrice).Str("time", currentTime).Msg("Gas price update processed successfully")
     return nil
 }

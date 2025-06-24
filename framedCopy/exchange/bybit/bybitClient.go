@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
+	"sync"
 	log "github.com/rs/zerolog/log"
 	"github.com/souravmenon1999/trade-engine/framedCopy/config"
 	exchange "github.com/souravmenon1999/trade-engine/framedCopy/exchange"
@@ -26,10 +26,14 @@ type BybitClient struct {
 	accountHandler   exchange.AccountHandler
 	apiKey           string
 	apiSecret        string
+	onReadyCallback  func() // Callback to trigger connection
+    connectionMu     sync.Mutex
+    isConnected      bool
+    connectionCallbacks []func() // Callbacks for connection established
 }
 
-func NewBybitClient(cfg *config.Config) *BybitClient {
-	publicWS := baseWS.NewBaseWSClient(cfg.BybitOrderbook.WSUrl, cfg.BybitExchangeClient.APIKey, cfg.BybitExchangeClient.APISecret)
+func NewBybitClient(cfg *config.Config, onReadyCallback func()) *BybitClient {
+	publicWS := baseWS.NewBaseWSClient(cfg.BybitOrderbook.WSUrl, "", "")
 	tradingWS := baseWS.NewBaseWSClient(cfg.BybitExchangeClient.TradingWSUrl, cfg.BybitExchangeClient.APIKey, cfg.BybitExchangeClient.APISecret)
 	updatesWS := baseWS.NewBaseWSClient(cfg.BybitExchangeClient.UpdatesWSUrl, cfg.BybitExchangeClient.APIKey, cfg.BybitExchangeClient.APISecret)
 
@@ -40,6 +44,11 @@ func NewBybitClient(cfg *config.Config) *BybitClient {
 		symbol:     cfg.BybitOrderbook.Symbol,
 		apiKey:     cfg.BybitExchangeClient.APIKey,
 		apiSecret:  cfg.BybitExchangeClient.APISecret,
+		 onReadyCallback:  onReadyCallback,
+        isConnected:      false,
+        connectionCallbacks: []func(){},
+
+		
 	}
 
 	// Register handlers
@@ -49,51 +58,122 @@ func NewBybitClient(cfg *config.Config) *BybitClient {
 	tradingHandler := NewBybitTradingHandler(client.tradingHandler)
 	tradingWS.RegisterHandler("order", tradingHandler)
 
-	privateHandler := NewBybitPrivateHandler(client.executionHandler, client.accountHandler)
+	privateHandler := NewBybitPrivateHandler(client)
 	updatesWS.RegisterHandler("position", privateHandler)
 	updatesWS.RegisterHandler("execution.fast", privateHandler)
 	updatesWS.RegisterHandler("wallet", privateHandler)
+	updatesWS.RegisterHandler("order", privateHandler)
 
-	// Connect and subscribe
-	if err := client.Connect(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to connect to Bybit WebSockets")
-	}
-	if err := client.SubscribeAll(cfg); err != nil {
-		log.Fatal().Err(err).Msg("Failed to subscribe to Bybit topics")
-	}
-	client.StartReading()
+
+
+	
 
 	return client
 }
 
+
+// SetOnReadyCallback allows setting the callback after creation
+func (c *BybitClient) SetOnReadyCallback(callback func()) {
+    c.onReadyCallback = callback
+}
+
 func (c *BybitClient) Connect() error {
-	if err := c.publicWS.Connect(); err != nil {
-		return fmt.Errorf("failed to connect public WS: %w", err)
-	}
-	if err := c.tradingWS.Connect(); err != nil {
-		return fmt.Errorf("failed to connect trading WS: %w", err)
-	}
-	if err := c.updatesWS.Connect(); err != nil {
-		return fmt.Errorf("failed to connect updates WS: %w", err)
-	}
-	return nil
+    const maxRetries = 5
+    const retryDelay = 2 * time.Second
+
+    for i := 0; i < maxRetries; i++ {
+        err := c.connectAttempt()
+        if err == nil {
+            c.connectionMu.Lock()
+            c.isConnected = true
+            callbacks := c.connectionCallbacks
+            c.connectionMu.Unlock()
+            for _, cb := range callbacks {
+                cb()
+            }
+            log.Info().Msg("Bybit WebSockets connected")
+            return nil
+        }
+        log.Error().Err(err).Int("attempt", i+1).Msg("Failed to connect Bybit WebSockets")
+        if i < maxRetries-1 {
+            time.Sleep(retryDelay)
+        }
+    }
+    return fmt.Errorf("failed to connect Bybit WebSockets after %d attempts", maxRetries)
+}
+
+func (c *BybitClient) connectAttempt() error {
+    if err := c.publicWS.Connect(); err != nil {
+        return fmt.Errorf("failed to connect public WS: %w", err)
+    }
+    if err := c.tradingWS.Connect(); err != nil {
+        c.publicWS.Close()
+        return fmt.Errorf("failed to connect trading WS: %w", err)
+    }
+    if err := c.updatesWS.Connect(); err != nil {
+        c.publicWS.Close()
+        c.tradingWS.Close()
+        return fmt.Errorf("failed to connect updates WS: %w", err)
+    }
+    return nil
 }
 
 func (c *BybitClient) SubscribeAll(cfg *config.Config) error {
-	publicSub := map[string]interface{}{
-		"op":   "subscribe",
-		"args": []interface{}{fmt.Sprintf("orderbook.%d.%s", cfg.BybitOrderbook.OrderbookDepth, c.symbol)},
-	}
-	if err := c.publicWS.Subscribe(publicSub); err != nil {
-		return fmt.Errorf("failed to subscribe to public topic: %w", err)
-	}
-	return nil
+
+	
+    // Subscribe publicWS to orderbook
+    publicSub := map[string]interface{}{
+        "op":   "subscribe",
+        "args": []interface{}{fmt.Sprintf("orderbook.%d.%s", cfg.BybitOrderbook.OrderbookDepth, c.symbol)},
+    }
+    if err := c.publicWS.Subscribe(publicSub); err != nil {
+        return fmt.Errorf("failed to subscribe to public topic: %w", err)
+    }
+
+    // Subscribe updatesWS to private topics
+    privateSub := map[string]interface{}{
+        "op":   "subscribe",
+        "args": []interface{}{
+            "position",
+            "execution",
+            "wallet",
+            "order",
+        },
+    }
+    if err := c.updatesWS.Subscribe(privateSub); err != nil {
+        return fmt.Errorf("failed to subscribe to private topics: %w", err)
+    }
+
+    return nil
 }
 
+// StartReading begins reading WebSocket messages
 func (c *BybitClient) StartReading() {
-	c.publicWS.Start()
-	c.tradingWS.Start()
-	c.updatesWS.Start()
+    c.publicWS.Start()
+    c.tradingWS.Start()
+    c.updatesWS.Start()
+}
+
+func (c *BybitClient) GetOnReadyCallback() func() {
+    return c.onReadyCallback
+}
+
+// IsConnected implements ConnectionState
+func (c *BybitClient) IsConnected() bool {
+    c.connectionMu.Lock()
+    defer c.connectionMu.Unlock()
+    return c.isConnected && c.publicWS.IsConnected() && c.tradingWS.IsConnected() && c.updatesWS.IsConnected()
+}
+
+// RegisterConnectionCallback implements ConnectionState
+func (c *BybitClient) RegisterConnectionCallback(callback func()) {
+    c.connectionMu.Lock()
+    defer c.connectionMu.Unlock()
+    if c.isConnected {
+        callback() // Call immediately if already connected
+    } else {
+        c.connectionCallbacks = append(c.connectionCallbacks, callback)
+    }
 }
 
 func (c *BybitClient) SetTradingHandler(handler exchange.TradingHandler) {

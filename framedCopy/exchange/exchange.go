@@ -2,14 +2,27 @@ package exchange
 
 import (
     "sync"
-    "github.com/souravmenon1999/trade-engine/framedCopy/types")
+    "github.com/souravmenon1999/trade-engine/framedCopy/types"
+    "github.com/souravmenon1999/trade-engine/framedCopy/config"
+)
 
+type ConnectionState interface {
+    IsConnected() bool
+    RegisterConnectionCallback(callback func())
+}
 
 type Exchange interface {
+    ConnectionState
     SendOrder(order *types.Order) (string, error)
     CancelOrder(orderID string) error
     SetTradingHandler(handler TradingHandler)
     SetExecutionHandler(handler ExecutionHandler)
+    SetAccountHandler(handler AccountHandler)
+    SetOnReadyCallback(callback func())
+    GetOnReadyCallback() func()
+    Connect() error
+    SubscribeAll(cfg *config.Config) error
+    StartReading()
 }
 
 type TradingHandler interface {
@@ -35,31 +48,31 @@ type OrderbookHandler interface {
 }
 
 type AccountHandler interface {
-	OnAccountUpdate(update *types.AccountUpdate)
-	OnPositionUpdate(position *types.Position)
-	OnPositionDisconnect()
-	OnPositionError(error string)
-	OnPositionConnect()
-}
-type PriorityFeeHandler interface {
-	OnPriorityFee(feeInMicroLamport int64)
+    OnAccountUpdate(update *types.AccountUpdate)
+    OnPositionUpdate(position *types.Position)
+    OnPositionDisconnect()
+    OnPositionError(error string)
+    OnPositionConnect()
 }
 
+type PriorityFeeHandler interface {
+    OnPriorityFee(feeInMicroLamport int64)
+}
 
 type OrderStore struct {
-    Orders sync.Map // Replaced map[string]*types.Order with sync.Map
+    Orders sync.Map
 }
 
 var GlobalOrderStore = &OrderStore{}
 
 func (s *OrderStore) StoreOrder(order *types.Order) {
-    s.Orders.Store(order.ClientOrderID, order) // Using sync.Map Store
+    s.Orders.Store(order.ClientOrderID, order)
 }
 
 func (s *OrderStore) GetOrder(clientOrderID string) (*types.Order, bool) {
-    order, ok := s.Orders.Load(clientOrderID) // Using sync.Map Load
+    order, ok := s.Orders.Load(clientOrderID)
     if !ok {
         return nil, false
     }
-    return order.(*types.Order), true // Type assertion to *types.Order
+    return order.(*types.Order), true
 }

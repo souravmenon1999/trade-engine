@@ -18,11 +18,11 @@ import (
 	"github.com/cosmos/cosmos-sdk/client"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/shopspring/decimal"
+	"github.com/souravmenon1999/trade-engine/framedCopy/config" // Import config package
 	"github.com/souravmenon1999/trade-engine/framedCopy/exchange"
 	"github.com/souravmenon1999/trade-engine/framedCopy/new" // Use common WebSocket client
 	"github.com/souravmenon1999/trade-engine/framedCopy/types"
 	logs "github.com/rs/zerolog/log"
-
 )
 
 // InjectiveClient manages connections and subscriptions for Injective Protocol
@@ -44,13 +44,20 @@ type InjectiveClient struct {
 	fundingCancel    context.CancelFunc
 	accountCancel    context.CancelFunc
 	bookCancel       context.CancelFunc
+	cfg              *config.Config // Add config field to store configuration
 }
 
 // NewInjectiveClient creates and initializes a new Injective client
-func NewInjectiveClient(
-	networkName, lb, privKey, marketId, subaccountId string,
-) (*InjectiveClient, error) {
+func NewInjectiveClient(cfg *config.Config) (*InjectiveClient, error) {
 	log.Printf("Starting InjectiveClient initialization")
+
+	// Extract required fields from config
+	networkName := cfg.InjectiveExchange.NetworkName
+	lb := cfg.InjectiveExchange.Lb
+	privKey := cfg.InjectiveExchange.PrivKey
+	marketId := cfg.InjectiveExchange.MarketId
+	subaccountId := cfg.InjectiveExchange.SubaccountId
+
 	network := common.LoadNetwork(networkName, lb)
 
 	tmClient, err := http.New(network.TmEndpoint, "/websocket")
@@ -87,67 +94,52 @@ func NewInjectiveClient(
 	}
 	log.Println("📊 Orderbook updates client ready")
 
-	// Use BaseWSClient instead of InjectiveWSClient
-	// wsClient := baseWS.NewBaseWSClient("wss://sentry.tm.injective.network:443/websocket", "", "") // No API key/secret for public stream
-
 	client := &InjectiveClient{
 		tradeClient:      tradeClient,
 		updatesClient:    updatesClient,
-		wsClient:          baseWS.NewBaseWSClient("wss://sentry.tm.injective.network:443/websocket", "", ""),		senderAddress:    senderAddress.String(),
+		wsClient:         baseWS.NewBaseWSClient("wss://sentry.tm.injective.network:443/websocket", "", ""),
+		senderAddress:    senderAddress.String(),
 		clientCtx:        clientCtx,
 		marketId:         marketId,
 		subaccountId:     subaccountId,
 		latestGasPrice:   atomic.Int64{},
 		orderFillTracker: make(map[string]float64),
+		cfg:              cfg, // Store the config
 	}
 
 	// Register gas price handler
-gasHandler := NewGasPriceHandler(func(gasPrice int64) {
-        client.latestGasPrice.Store(gasPrice)
-        logs.Info().Int64("gasPrice", gasPrice).Msg("Updated gas price")
-    })
-    client.wsClient.SetDefaultHandler(gasHandler)
-
-    // Connect to the WebSocket
-    if err := client.wsClient.Connect(); err != nil {
-        log.Printf("Failed to connect to WebSocket: %v", err)
-        return nil, err
-    }
+	gasHandler := NewGasPriceHandler(func(gasPrice int64) {
+		client.latestGasPrice.Store(gasPrice)
+	})
+	client.wsClient.SetDefaultHandler(gasHandler)
 
 	log.Printf("🚀 Injective client fully initialized (Sender: %s)", senderAddress.String())
 
-	client.SubscribeAll(marketId, subaccountId)
 	return client, nil
 }
 
-// handleGasPriceUpdate updates the latest gas price
-func (c *InjectiveClient) handleGasPriceUpdate(gasPrice int64) {
-	if gasPrice <= 0 {
-		log.Printf("Invalid gas price received: %d, skipping update", gasPrice)
-		return
+// Connect establishes the WebSocket connection and subscribes to streams
+func (c *InjectiveClient) Connect() error {
+	if err := c.wsClient.Connect(); err != nil {
+		return fmt.Errorf("failed to connect to WebSocket: %w", err)
 	}
-	c.latestGasPrice.Store(gasPrice)
+	if err := c.SubscribeAll(c.cfg); err != nil {
+		return fmt.Errorf("failed to subscribe all: %w", err)
+	}
+	return nil
 }
 
-// SetTradingHandler sets the trading handler
-func (c *InjectiveClient) SetTradingHandler(handler exchange.TradingHandler) {
-	c.tradingHandler = handler
-	log.Printf("Set trading handler for Injective")
-}
-
-// SetExecutionHandler sets the execution handler
-func (c *InjectiveClient) SetExecutionHandler(handler exchange.ExecutionHandler) {
-	c.executionHandler = handler
-	log.Printf("Set execution handler for Injective")
-}
-
-func (c *InjectiveClient) SetAccountHandler(handler exchange.AccountHandler) {
-	c.accountHandler = handler
-	log.Printf("Set account handler for Injective")
+// StartReading starts reading from the WebSocket
+func (c *InjectiveClient) StartReading() {
+	c.wsClient.Start()
 }
 
 // SubscribeAll subscribes to order history, funding rates, account updates, and orderbook
-func (c *InjectiveClient) SubscribeAll(marketId, subaccountId string) {
+func (c *InjectiveClient) SubscribeAll(cfg *config.Config) error {
+	// Use the stored config, but accept cfg to match the Exchange interface
+	marketId := c.cfg.InjectiveExchange.MarketId
+	subaccountId := c.cfg.InjectiveExchange.SubaccountId
+
 	// Order history subscription
 	orderCtx, orderCancel := context.WithCancel(context.Background())
 	go c.subscribeOrderHistoryWithRetry(marketId, subaccountId, orderCtx)
@@ -159,6 +151,7 @@ func (c *InjectiveClient) SubscribeAll(marketId, subaccountId string) {
 		log.Printf("Funding rate update: %s", string(data))
 	}, fundingCtx); err != nil {
 		log.Printf("Failed to subscribe to funding rates: %v", err)
+		return err
 	}
 	c.fundingCancel = fundingCancel
 
@@ -191,8 +184,62 @@ func (c *InjectiveClient) SubscribeAll(marketId, subaccountId string) {
 	}
 	if err := c.wsClient.Subscribe(subMsg); err != nil {
 		log.Printf("Failed to subscribe to transaction events: %v", err)
+		return err
 	}
-	c.wsClient.Start()
+
+	return nil
+}
+
+// IsConnected checks if the WebSocket is connected
+func (c *InjectiveClient) IsConnected() bool {
+	return c.wsClient != nil && c.wsClient.IsConnected()
+}
+
+// SetOnReadyCallback sets a callback for when the client is ready (not used here)
+func (c *InjectiveClient) SetOnReadyCallback(callback func()) {
+	// No-op for Injective, as it doesn't use this callback
+}
+
+// GetOnReadyCallback returns the on-ready callback (not used here)
+func (c *InjectiveClient) GetOnReadyCallback() func() {
+	return nil
+}
+
+// RegisterConnectionCallback registers a callback for connection events
+func (c *InjectiveClient) RegisterConnectionCallback(callback func()) {
+	// Simplified implementation; you might enhance this based on wsClient capabilities
+	go func() {
+		if c.IsConnected() {
+			callback()
+		}
+	}()
+}
+
+// handleGasPriceUpdate updates the latest gas price
+func (c *InjectiveClient) handleGasPriceUpdate(gasPrice int64) {
+	if gasPrice <= 0 {
+		log.Printf("Invalid gas price received: %d, skipping update", gasPrice)
+		return
+	}
+	c.latestGasPrice.Store(gasPrice)
+}
+
+// SetTradingHandler sets the trading handler
+func (c *InjectiveClient) SetTradingHandler(handler exchange.TradingHandler) {
+	c.tradingHandler = handler
+	log.Printf("Set trading handler for Injective")
+}
+
+// SetExecutionHandler sets the execution handler
+func (c *InjectiveClient) SetExecutionHandler(handler exchange.ExecutionHandler) {
+	c.executionHandler = handler
+	log.Printf("Set execution handler for Injective")
+}
+
+// SetAccountHandler sets the account handler
+func (c *InjectiveClient) SetAccountHandler(handler exchange.AccountHandler) {
+	c.accountHandler = handler
+	log.Printf("Set account handler for Injective")
 }
 
 func (c *InjectiveClient) SubscribeAccountUpdates(subaccountId string, ctx context.Context) error {
@@ -457,15 +504,14 @@ func (c *InjectiveClient) handleOrderUpdate(raw *derivativeExchangePB.Derivative
 	if orderUpdate == nil {
 		return
 	}
-	  // Fetch the original order using RequestID (clientOrderID)
-    if orderUpdate.RequestID != nil {
-        originalOrder, ok := exchange.GlobalOrderStore.GetOrder(*orderUpdate.RequestID)
-        if ok {
-            orderUpdate.Order = originalOrder
-        } else {
-            logs.Warn().Str("clientOrderID", *orderUpdate.RequestID).Msg("No order found for update")
-        }
-    }
+	if orderUpdate.RequestID != nil {
+		originalOrder, ok := exchange.GlobalOrderStore.GetOrder(*orderUpdate.RequestID)
+		if ok {
+			orderUpdate.Order = originalOrder
+		} else {
+			logs.Warn().Str("clientOrderID", *orderUpdate.RequestID).Msg("No order found for update")
+		}
+	}
 	if c.tradingHandler != nil {
 		c.tradingHandler.OnOrderUpdate(orderUpdate)
 	}
