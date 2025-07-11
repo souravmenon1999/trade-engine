@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
-	"fmt"
+	//"fmt"
 	"regexp"
 	"log"
 	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/cache/injective"
@@ -175,30 +175,25 @@ func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decim
 
 
 
-var denomToSymbol = map[string]string{
-    "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7": "USDT",
-    "inj": "INJ",
-    // Add more mappings as needed
-}
+// var denomToSymbol = map[string]string{
+//     "peggy0xdAC17F958D2ee523a2206206994597C13D831ec7": "USDT",
+//     "inj": "INJ",
+//     // Add more mappings as needed
+// }
 
 // Function to convert denomination to symbol
-func getSymbol(denom string) string {
-    if symbol, ok := denomToSymbol[denom]; ok {
-        return symbol
-    }
-    return denom // Return original denom if no mapping exists
-}
+// func getSymbol(denom string) string {
+//     if symbol, ok := denomToSymbol[denom]; ok {
+//         return symbol
+//     }
+//     return denom // Return original denom if no mapping exists
+// }
 
 func PrintRealizedPnL() {
-    balances := injectiveCache.GetBalances()
-    var balanceParts []string
-    for denom, amount := range balances {
-    balanceParts = append(balanceParts, fmt.Sprintf("%s=%s", getSymbol(denom), amount))
-}
-    balancesStr := strings.Join(balanceParts, ", ")
-    if balancesStr == "" {
-        balancesStr = "None"
-    }
-    log.Printf("Current Realized PnL: %s USDT, Unrealized PnL: %s USDT, Fee Rebates: %s USDT, Total Gas: %d, Balances: %s",
-        injectiveCache.GetRealizedPnL(), injectiveCache.GetUnrealizedPnL(), injectiveCache.GetFeeRebates(), injectiveCache.GetTotalGas(), balancesStr)
+	totalUSD := injectiveCache.GetTotalUSD()
+	if totalUSD == "" {
+		totalUSD = "0" // Fallback if not set
+	}
+	log.Printf("Current Realized PnL: %s USDT, Unrealized PnL: %s USDT, Fee Rebates: %s USDT, Total Gas: %d, Total USD Balance: %s",
+		injectiveCache.GetRealizedPnL(), injectiveCache.GetUnrealizedPnL(), injectiveCache.GetFeeRebates(), injectiveCache.GetTotalGas(), totalUSD)
 }

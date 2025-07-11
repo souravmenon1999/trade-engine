@@ -15,7 +15,7 @@ var (
 	unrealizedPnL int64
 	feeRebates    int64
 	totalGas      int64
-	balances sync.Map
+	totalUSD      string
 )
 
 type Position struct {
@@ -31,6 +31,7 @@ func Init() {
 	atomic.StoreInt64(&unrealizedPnL, 0)
 	atomic.StoreInt64(&feeRebates, 0)
 	atomic.StoreInt64(&totalGas, 0)
+	totalUSD = "0"
 }
 
 // AddOrder adds an order to the orders sync.Map if it's in a non-terminal state
@@ -105,15 +106,10 @@ func GetTotalGas() int64 {
 	return atomic.LoadInt64(&totalGas)
 }
 
-func UpdateBalance(denom string, amount string) {
-    balances.Store(denom, amount)
+func UpdateTotalUSD(usd string) {
+	totalUSD = usd
 }
 
-func GetBalances() map[string]string {
-    balancesMap := make(map[string]string)
-    balances.Range(func(key, value interface{}) bool {
-        balancesMap[key.(string)] = value.(string)
-        return true
-    })
-    return balancesMap
+func GetTotalUSD() string {
+	return totalUSD
 }

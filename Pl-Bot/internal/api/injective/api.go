@@ -25,30 +25,18 @@ type PortfolioResponse struct {
 }
 
 func FetchAccountPortfolio(client exchangeclient.ExchangeClient, ctx context.Context, accountAddress, subaccountID string, includeSubaccounts bool) error {
-    // Fetch the portfolio data
     res, err := client.GetAccountPortfolioBalances(ctx, accountAddress, includeSubaccounts)
     if err != nil {
         return err
     }
-
-	log.Printf(res.String())
-
-    // Check if the response is non-nil and access its fields
+    log.Printf("Account portfolio response:\n%s", res.String())
     if res != nil {
         portfolio := res.GetPortfolio()
         if portfolio != nil {
-            for _, sub := range portfolio.GetSubaccounts() {
-                if sub.GetSubaccountId() == subaccountID {
-                    deposit := sub.GetDeposit()
-                    if deposit != nil {
-                        injectiveCache.UpdateBalance(sub.GetDenom(), deposit.GetTotalBalance())
-                        log.Printf("Updated balance for denom %s: %s", sub.GetDenom(), deposit.GetTotalBalance())
-                    }
-                }
-            }
+            injectiveCache.UpdateTotalUSD(portfolio.GetTotalUsd())
+            log.Printf("Updated total USD: %s", portfolio.GetTotalUsd())
         }
     }
-
     return nil
 }
 
