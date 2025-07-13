@@ -106,10 +106,16 @@ func GetTotalGas() int64 {
 	return atomic.LoadInt64(&totalGas)
 }
 
+func ResetTotalGas() {
+    atomic.StoreInt64(&totalGas, 0)
+}
+
 func UpdateTotalUSD(usd string) {
 	totalUSD = usd
 }
 
+
 func GetTotalUSD() string {
 	return totalUSD
 }
+

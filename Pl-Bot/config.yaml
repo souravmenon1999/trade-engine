@@ -4,4 +4,8 @@ AccountAddress: "inj1rzkrmvv5ur69ldr9yanxgljycvugfp8vdtc4yq"
 bybit:
   api_key: "5audz0lEsFqIDQgQbN"      
   api_secret: "zXKppDu7dxUT0LcVfGR0CmHwbIoNDabAFbuH" 
-  symbol: "ETHUSDT"                 
+  symbol: "ETHUSDT"
+mongo_uri: mongodb+srv://sshft368:wrmNLr2AUkbA2Zy7@cluster0.eseeqov.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
+telegram:
+  bot_token: "7905115999:AAHy8nnCU33n7gbVMR81z312TFEbju1OIoY"
+  channel_id: "-1002705562601"

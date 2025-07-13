@@ -2,64 +2,62 @@ package injectivePnl
 
 import (
 	"context"
-	"strings"
+	//"strings"
 	"sync"
 	//"fmt"
-	"regexp"
+	//"regexp"
+	"math/big"
 	"log"
 	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/cache/injective"
 	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/streams/injective"
 	"github.com/shopspring/decimal"
-explorer "github.com/InjectiveLabs/sdk-go/client/explorer"
-
+	//explorer "github.com/InjectiveLabs/sdk-go/client/explorer"
+	chainclient "github.com/InjectiveLabs/sdk-go/client/chain"
 	derivativeExchangePB "github.com/InjectiveLabs/sdk-go/exchange/derivative_exchange_rpc/pb"
 )
 
 
+var (
+    positions = make(map[string]*Position)
+    mu        sync.RWMutex
+    totalGas  uint64
+)
 
-type GasCalculator struct {
-	explorerClient explorer.ExplorerClient
-	txHashes       map[string]bool
-	mu             sync.Mutex
+type Position struct {
+    Quantity      *big.Float
+    AvgEntryPrice *big.Float
+    RealizedPnL   *big.Float
+    UnrealizedPnL *big.Float
+    FeeRebates    *big.Float
+    MarketPrice   *big.Float
 }
 
-func NewGasCalculator(explorerClient explorer.ExplorerClient) *GasCalculator {
-	return &GasCalculator{
-		explorerClient: explorerClient,
-		txHashes:       make(map[string]bool),
-	}
+type GasCalculator struct {
+    txHashes map[string]struct{}
+}
+
+func NewGasCalculator() *GasCalculator {
+    return &GasCalculator{
+        txHashes: make(map[string]struct{}),
+    }
 }
 
 func (c *GasCalculator) AddTxHash(txHash string) {
-	if txHash == "" {
-		return
-	}
-	normalized := strings.TrimPrefix(txHash, "0x")
-	// Validate: must be 64 hex characters and not all zeros
-	if len(normalized) != 64 || !regexp.MustCompile(`^[0-9a-fA-F]{64}$`).MatchString(normalized) || normalized == "0000000000000000000000000000000000000000000000000000000000000000" {
-		log.Printf("Skipping invalid tx_hash: %s", txHash)
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.txHashes[normalized] = true
+    c.txHashes[txHash] = struct{}{}
 }
 
-func (c *GasCalculator) CalculateGas(ctx context.Context) (int64, error) {
-	var totalGas int64
-	for txHash := range c.txHashes {
-		txDetails, err := c.explorerClient.GetTxByTxHash(ctx, txHash)
-		if err != nil {
-			log.Printf("Error fetching tx %s: %v", txHash, err)
-			continue
-		}
-		totalGas += txDetails.Data.GasUsed
-	}
-	return totalGas, nil
+func (c *GasCalculator) CalculateGasWithChainClient(ctx context.Context, chainClient chainclient.ChainClient) (int64, error) {
+    var totalGas int64
+    for txHash := range c.txHashes {
+        resp, err := chainClient.GetTx(ctx, txHash)
+        if err != nil {
+            log.Printf("Error fetching tx %s: %v", txHash, err)
+            continue
+        }
+        totalGas += resp.TxResponse.GasUsed
+    }
+    return totalGas, nil
 }
-
-
-
 
 
 
@@ -196,4 +194,22 @@ func PrintRealizedPnL() {
 	}
 	log.Printf("Current Realized PnL: %s USDT, Unrealized PnL: %s USDT, Fee Rebates: %s USDT, Total Gas: %d, Total USD Balance: %s",
 		injectiveCache.GetRealizedPnL(), injectiveCache.GetUnrealizedPnL(), injectiveCache.GetFeeRebates(), injectiveCache.GetTotalGas(), totalUSD)
+}
+
+func GetPnLStats() (float64, float64, float64, uint64) {
+    mu.RLock()
+    defer mu.RUnlock()
+    var realizedPnL, unrealizedPnL, feeRebates float64
+    for _, pos := range positions {
+        if pos.Quantity.Cmp(big.NewFloat(0)) != 0 {
+            pos.UnrealizedPnL = new(big.Float).Mul(pos.Quantity, new(big.Float).Sub(pos.MarketPrice, pos.AvgEntryPrice))
+        }
+        r, _ := pos.RealizedPnL.Float64()
+        u, _ := pos.UnrealizedPnL.Float64()
+        f, _ := pos.FeeRebates.Float64()
+        realizedPnL += r
+        unrealizedPnL += u
+        feeRebates += f
+    }
+    return realizedPnL, unrealizedPnL, feeRebates, totalGas
 }
