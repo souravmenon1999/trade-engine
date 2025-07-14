@@ -105,6 +105,15 @@ func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decim
 		pos = injectiveCache.Position{Quantity: decimal.Zero, AverageEntryPrice: decimal.Zero}
 	}
 
+	oldUnrealized := decimal.Zero
+    if exists && !pos.Quantity.IsZero() && !marketPrice.IsZero() {
+        if pos.Quantity.GreaterThan(decimal.Zero) {
+            oldUnrealized = marketPrice.Sub(pos.AverageEntryPrice).Mul(pos.Quantity)
+        } else {
+            oldUnrealized = pos.AverageEntryPrice.Sub(marketPrice).Mul(pos.Quantity.Neg())
+        }
+    }
+
 	log.Printf("Processing trade: %s %s at %s USDT (Fee: %s USDT, ExecutionSide: %s)", 
 		side, quantity, price, fee, trade.ExecutionSide)
 
@@ -168,15 +177,15 @@ func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decim
 
 	// Calculate unrealized PnL
 	unrealized := decimal.Zero
-	if !pos.Quantity.IsZero() && !marketPrice.IsZero() {
-		if pos.Quantity.GreaterThan(decimal.Zero) {
-			unrealized = marketPrice.Sub(pos.AverageEntryPrice).Mul(pos.Quantity)
-		} else {
-			unrealized = pos.AverageEntryPrice.Sub(marketPrice).Mul(pos.Quantity.Neg())
-		}
-	}
-	injectiveCache.AddUnrealizedPnL(unrealized)
-
+    if !pos.Quantity.IsZero() && !marketPrice.IsZero() {
+        if pos.Quantity.GreaterThan(decimal.Zero) {
+            unrealized = marketPrice.Sub(pos.AverageEntryPrice).Mul(pos.Quantity)
+        } else {
+            unrealized = pos.AverageEntryPrice.Sub(marketPrice).Mul(pos.Quantity.Neg())
+        }
+    }
+    deltaUnreal := unrealized.Sub(oldUnrealized)
+	injectiveCache.AddUnrealizedPnL(deltaUnreal)
 	// Update or remove position
 	if pos.Quantity.IsZero() {
 		injectiveCache.DeletePosition(marketID)
