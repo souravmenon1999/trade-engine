@@ -4,9 +4,11 @@ import (
 	"context"
 	//"strings"
 	"sync"
+	"strings"
 	//"fmt"
 	//"regexp"
 	"math/big"
+	//"strconv"
 	"log"
 	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/cache/injective"
 	"github.com/souravmenon1999/trade-engine/Pl-Bot/internal/streams/injective"
@@ -34,6 +36,7 @@ type Position struct {
 
 type GasCalculator struct {
     txHashes map[string]struct{}
+	
 }
 
 func NewGasCalculator() *GasCalculator {
@@ -46,19 +49,33 @@ func (c *GasCalculator) AddTxHash(txHash string) {
     c.txHashes[txHash] = struct{}{}
 }
 
-func (c *GasCalculator) CalculateGasWithChainClient(ctx context.Context, chainClient chainclient.ChainClient) (int64, error) {
-    var totalGas int64
+func (c *GasCalculator) CalculateGasWithChainClient(ctx context.Context, chainClient chainclient.ChainClient) (decimal.Decimal, error) {
+    var totalGasFee decimal.Decimal
     for txHash := range c.txHashes {
         resp, err := chainClient.GetTx(ctx, txHash)
         if err != nil {
             log.Printf("Error fetching tx %s: %v", txHash, err)
             continue
         }
-        totalGas += resp.TxResponse.GasUsed
+        for _, event := range resp.TxResponse.Events {
+            if event.Type == "tx" {
+                for _, attr := range event.Attributes {
+                    if attr.Key == "fee" && strings.HasSuffix(attr.Value, "inj") {
+                        feeAmountStr := strings.TrimSuffix(attr.Value, "inj")
+                        feeAmount, err := decimal.NewFromString(feeAmountStr)
+                        if err != nil {
+                            log.Printf("Error parsing fee amount for tx %s: %v", txHash, err)
+                            continue
+                        }
+                        totalGasFee = totalGasFee.Add(feeAmount.Div(decimal.NewFromInt(1e18)))
+                    }
+                }
+            }
+        }
     }
-    return totalGas, nil
+	log.Printf("gas %v", totalGasFee )
+    return totalGasFee, nil
 }
-
 
 
 func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decimal.Decimal) {
@@ -192,7 +209,7 @@ func PrintRealizedPnL() {
 	if totalUSD == "" {
 		totalUSD = "0" // Fallback if not set
 	}
-	log.Printf("Current Realized PnL: %s USDT, Unrealized PnL: %s USDT, Fee Rebates: %s USDT, Total Gas: %d, Total USD Balance: %s",
+	log.Printf("Current Realized PnL: %s USDT, Unrealized PnL: %s USDT, Fee Rebates: %s USDT, Total Gas: %v, Total USD Balance: %s",
 		injectiveCache.GetRealizedPnL(), injectiveCache.GetUnrealizedPnL(), injectiveCache.GetFeeRebates(), injectiveCache.GetTotalGas(), totalUSD)
 }
 

@@ -117,7 +117,7 @@ func calculateGasFromMongo(ctx context.Context, chainClient chainclient.ChainCli
     }
     injectiveCache.ResetTotalGas()
     injectiveCache.AddTotalGas(totalGas)
-    log.Printf("Updated total gas: %d", injectiveCache.GetTotalGas())
+    log.Printf("Updated total gas: %v", injectiveCache.GetTotalGas())
     return nil
 }
 

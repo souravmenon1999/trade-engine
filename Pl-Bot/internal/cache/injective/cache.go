@@ -3,8 +3,8 @@ package injectiveCache
 import (
 	"sync"
 	"sync/atomic"
-
 	"github.com/shopspring/decimal"
+	
 	derivativeExchangePB "github.com/InjectiveLabs/sdk-go/exchange/derivative_exchange_rpc/pb"
 )
 
@@ -14,7 +14,7 @@ var (
 	realizedPnL   int64
 	unrealizedPnL int64
 	feeRebates    int64
-	totalGas      int64
+	totalGas      decimal.Decimal
 	totalUSD      string
 )
 
@@ -30,7 +30,7 @@ func Init() {
 	atomic.StoreInt64(&realizedPnL, 0)
 	atomic.StoreInt64(&unrealizedPnL, 0)
 	atomic.StoreInt64(&feeRebates, 0)
-	atomic.StoreInt64(&totalGas, 0)
+	totalGas = decimal.Zero
 	totalUSD = "0"
 }
 
@@ -98,16 +98,14 @@ func GetFeeRebates() decimal.Decimal {
 	return decimal.NewFromInt(atomic.LoadInt64(&feeRebates)).Div(decimal.NewFromInt(1e6))
 }
 
-func AddTotalGas(gas int64) {
-	atomic.AddInt64(&totalGas, gas)
+func AddTotalGas(gas decimal.Decimal) {
+    totalGas = totalGas.Add(gas)
 }
-
-func GetTotalGas() int64 {
-	return atomic.LoadInt64(&totalGas)
+func GetTotalGas() decimal.Decimal {
+    return totalGas
 }
-
 func ResetTotalGas() {
-    atomic.StoreInt64(&totalGas, 0)
+    totalGas = decimal.Zero
 }
 
 func UpdateTotalUSD(usd string) {
