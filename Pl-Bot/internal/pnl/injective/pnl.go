@@ -81,13 +81,24 @@ func (c *GasCalculator) CalculateGasWithChainClient(ctx context.Context, chainCl
 func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decimal.Decimal) {
 	marketID := trade.MarketId
 	side := trade.PositionDelta.TradeDirection
-	quantity, _ := decimal.NewFromString(trade.PositionDelta.ExecutionQuantity)
-	
-	// Convert prices from micro USDT to USDT
-	priceMicro, _ := decimal.NewFromString(trade.PositionDelta.ExecutionPrice)
+	// CHANGE 1: Keep error handling for quantity parsing
+	quantity, err := decimal.NewFromString(trade.PositionDelta.ExecutionQuantity)
+	if err != nil {
+		log.Printf("Error parsing quantity for trade %s: %v", trade.TradeId, err)
+		return
+	}
+	// CHANGE 2: Add error handling for price and fee parsing
+	priceMicro, err := decimal.NewFromString(trade.PositionDelta.ExecutionPrice)
+	if err != nil {
+		log.Printf("Error parsing price for trade %s: %v", trade.TradeId, err)
+		return
+	}
 	price := priceMicro.Div(decimal.NewFromInt(1e6))
-	
-	feeMicro, _ := decimal.NewFromString(trade.Fee)
+	feeMicro, err := decimal.NewFromString(trade.Fee)
+	if err != nil {
+		log.Printf("Error parsing fee for trade %s: %v", trade.TradeId, err)
+		return
+	}
 	fee := feeMicro.Div(decimal.NewFromInt(1e6))
 
 	// Handle rebates
@@ -105,14 +116,15 @@ func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decim
 		pos = injectiveCache.Position{Quantity: decimal.Zero, AverageEntryPrice: decimal.Zero}
 	}
 
+	// CHANGE 3: Calculate old unrealized PnL before position update
 	oldUnrealized := decimal.Zero
-    if exists && !pos.Quantity.IsZero() && !marketPrice.IsZero() {
-        if pos.Quantity.GreaterThan(decimal.Zero) {
-            oldUnrealized = marketPrice.Sub(pos.AverageEntryPrice).Mul(pos.Quantity)
-        } else {
-            oldUnrealized = pos.AverageEntryPrice.Sub(marketPrice).Mul(pos.Quantity.Neg())
-        }
-    }
+	if exists && !pos.Quantity.IsZero() && !marketPrice.IsZero() {
+		if pos.Quantity.GreaterThan(decimal.Zero) {
+			oldUnrealized = marketPrice.Sub(pos.AverageEntryPrice).Mul(pos.Quantity)
+		} else {
+			oldUnrealized = pos.AverageEntryPrice.Sub(marketPrice).Mul(pos.Quantity.Neg())
+		}
+	}
 
 	log.Printf("Processing trade: %s %s at %s USDT (Fee: %s USDT, ExecutionSide: %s)", 
 		side, quantity, price, fee, trade.ExecutionSide)
@@ -176,19 +188,25 @@ func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decim
 	}
 
 	// Calculate unrealized PnL
+	// CHANGE 4: Set unrealized to zero when position is closed
 	unrealized := decimal.Zero
-    if !pos.Quantity.IsZero() && !marketPrice.IsZero() {
-        if pos.Quantity.GreaterThan(decimal.Zero) {
-            unrealized = marketPrice.Sub(pos.AverageEntryPrice).Mul(pos.Quantity)
-        } else {
-            unrealized = pos.AverageEntryPrice.Sub(marketPrice).Mul(pos.Quantity.Neg())
-        }
-    }
-    deltaUnreal := unrealized.Sub(oldUnrealized)
-	injectiveCache.AddUnrealizedPnL(deltaUnreal)
-	// Update or remove position
+	if !pos.Quantity.IsZero() && !marketPrice.IsZero() {
+		if pos.Quantity.GreaterThan(decimal.Zero) {
+			unrealized = marketPrice.Sub(pos.AverageEntryPrice).Mul(pos.Quantity)
+		} else {
+			unrealized = pos.AverageEntryPrice.Sub(marketPrice).Mul(pos.Quantity.Neg())
+		}
+	}
+	// CHANGE 5: Only update unrealized PnL for non-zero positions
+	if !pos.Quantity.IsZero() {
+		deltaUnreal := unrealized.Sub(oldUnrealized)
+		injectiveCache.AddUnrealizedPnL(deltaUnreal)
+	}
+
+	// CHANGE 6: Reset unrealized PnL to zero when position is closed
 	if pos.Quantity.IsZero() {
 		injectiveCache.DeletePosition(marketID)
+		injectiveCache.AddUnrealizedPnL(decimal.Zero) // Force reset to zero
 	} else {
 		injectiveCache.SetPosition(marketID, pos)
 	}
@@ -196,7 +214,6 @@ func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decim
 	log.Printf("Updated position for %s: Quantity=%s, AvgEntry=%s USDT, RealizedPnL=%s USDT, UnrealizedPnL=%s USDT, FeeRebates=%s USDT, MarketPrice=%s USDT",
 		marketID, pos.Quantity, pos.AverageEntryPrice, injectiveCache.GetRealizedPnL(), injectiveCache.GetUnrealizedPnL(), injectiveCache.GetFeeRebates(), marketPrice)
 }
-
 
 
 // var denomToSymbol = map[string]string{

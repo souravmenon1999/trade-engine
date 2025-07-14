@@ -228,16 +228,16 @@ func main() {
     injectiveCache.Init()
     bybitCache.Init()
 
-    // marketDetails, err := injectiveStreams.FetchMarketDetails(client, ctx, config.MarketID)
-    // if err != nil {
-    //     log.Fatalf("Failed to fetch market details: %v", err)
-    // }
+    marketDetails, err := injectiveStreams.FetchMarketDetails(client, ctx, config.MarketID)
+    if err != nil {
+        log.Fatalf("Failed to fetch market details: %v", err)
+    }
 
-    // baseSymbol := marketDetails.Market.OracleBase
-    // quoteSymbol := marketDetails.Market.OracleQuote
-    // oracleType := marketDetails.Market.OracleType
+    baseSymbol := marketDetails.Market.OracleBase
+    quoteSymbol := marketDetails.Market.OracleQuote
+    oracleType := marketDetails.Market.OracleType
 
-    // go injectiveStreams.SubscribeToMarketPriceStream(client, baseSymbol, quoteSymbol, oracleType)
+    go injectiveStreams.SubscribeToMarketPriceStream(client,  baseSymbol, quoteSymbol, oracleType)
 
     err = injectiveApi.FetchAccountPortfolio(client, ctx, config.AccountAddress, config.SubaccountID, true)
     if err != nil {
