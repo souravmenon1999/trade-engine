@@ -93,7 +93,10 @@ func ProcessTrade(trade *derivativeExchangePB.DerivativeTrade, marketPrice decim
 		log.Printf("Error parsing price for trade %s: %v", trade.TradeId, err)
 		return
 	}
+	injectiveCache.AddTotalVolume(quantity)
 	price := priceMicro.Div(decimal.NewFromInt(1e6))
+	notional := quantity.Mul(price)
+	injectiveCache.AddTotalNotional(notional)
 	feeMicro, err := decimal.NewFromString(trade.Fee)
 	if err != nil {
 		log.Printf("Error parsing fee for trade %s: %v", trade.TradeId, err)
@@ -235,8 +238,8 @@ func PrintRealizedPnL() {
 	if totalUSD == "" {
 		totalUSD = "0" // Fallback if not set
 	}
-	log.Printf("Current Realized PnL: %s USDT, Unrealized PnL: %s USDT, Fee Rebates: %s USDT, Total Gas: %v, Total USD Balance: %s",
-		injectiveCache.GetRealizedPnL(), injectiveCache.GetUnrealizedPnL(), injectiveCache.GetFeeRebates(), injectiveCache.GetTotalGas(), totalUSD)
+	log.Printf("Current Realized PnL: %s USDT, Unrealized PnL: %s USDT, Fee Rebates: %s USDT, Total Gas: %v, Total USD Balance: %s, Total Volume: %s units / %s USDT",
+		injectiveCache.GetRealizedPnL(), injectiveCache.GetUnrealizedPnL(), injectiveCache.GetFeeRebates(), injectiveCache.GetTotalGas(), totalUSD, injectiveCache.GetTotalVolume(), injectiveCache.GetTotalNotional())
 }
 
 func GetPnLStats() (float64, float64, float64, uint64) {

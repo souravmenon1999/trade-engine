@@ -16,6 +16,8 @@ var (
 	feeRebates    int64
 	totalGas      decimal.Decimal
 	totalUSD      string
+	totalVolume   decimal.Decimal
+	totalNotional decimal.Decimal
 )
 
 type Position struct {
@@ -32,6 +34,8 @@ func Init() {
 	atomic.StoreInt64(&feeRebates, 0)
 	totalGas = decimal.Zero
 	totalUSD = "0"
+	totalVolume = decimal.Zero
+	totalNotional = decimal.Zero
 }
 
 // AddOrder adds an order to the orders sync.Map if it's in a non-terminal state
@@ -115,5 +119,29 @@ func UpdateTotalUSD(usd string) {
 
 func GetTotalUSD() string {
 	return totalUSD
+}
+
+func AddTotalVolume(delta decimal.Decimal) {
+    totalVolume = totalVolume.Add(delta)
+}
+
+func GetTotalVolume() decimal.Decimal {
+    return totalVolume
+}
+
+func ResetTotalVolume() {
+    totalVolume = decimal.Zero
+}
+
+func AddTotalNotional(delta decimal.Decimal) {
+    totalNotional = totalNotional.Add(delta)
+}
+
+func GetTotalNotional() decimal.Decimal {
+    return totalNotional
+}
+
+func ResetTotalNotional() {
+    totalNotional = decimal.Zero
 }
 

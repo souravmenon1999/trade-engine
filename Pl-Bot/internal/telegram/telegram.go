@@ -29,9 +29,11 @@ func SendHourlyUpdate(ctx context.Context, bot *tgbotapi.BotAPI, channelID strin
     unrealizedPnL, _ := injectiveCache.GetUnrealizedPnL().Float64()
     feeRebates, _ := injectiveCache.GetFeeRebates().Float64()
     totalGas := injectiveCache.GetTotalGas()
+    totalVolume, _ := injectiveCache.GetTotalVolume().Float64()
+    totalNotional, _ := injectiveCache.GetTotalNotional().Float64()
     message := fmt.Sprintf(
-        "📊 Hourly Injective Update\nRealized PnL: %.6f USDT\nUnrealized PnL: %.6f USDT\nFee Rebates: %.6f USDT\nTotal Gas: %v INJ",
-        realizedPnL, unrealizedPnL, feeRebates, totalGas,
+        "📊 Hourly Injective Update\nRealized PnL: %.6f USDT\nUnrealized PnL: %.6f USDT\nFee Rebates: %.6f USDT\nTotal Gas: %v INJ\nTotal Volume: %.6f units / %.2f USDT",
+        realizedPnL, unrealizedPnL, feeRebates, totalGas,totalVolume, totalNotional,
     )
     msg := tgbotapi.NewMessageToChannel(channelID, message)
     _, err := bot.Send(msg)
